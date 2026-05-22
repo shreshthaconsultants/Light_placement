@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Test-Path *)",
+      "PowerShell(dotnet build *)",
+      "PowerShell($f = Get-Item \"C:\\\\Users\\\\shres\\\\OneDrive\\\\Desktop\\\\Light\\\\bin\\\\Release\\\\net48\\\\LightPlacementPlugin.dll\"; Write-Output \"Attributes: $\\($f.Attributes\\)\"; Write-Output \"Size on disk: $\\($f.Length\\) bytes\"; Write-Output \"\"; $attrFlags = [int]$f.Attributes; Write-Output \"Has 'Offline' flag \\(cloud placeholder\\): $\\(\\($attrFlags -band 0x1000\\) -ne 0\\)\"; Write-Output \"Has 'ReparsePoint' flag: $\\(\\($attrFlags -band 0x400\\) -ne 0\\)\")",
+      "Bash(python -c \"import config; print\\('config OK'\\)\")",
+      "Bash(python -c \"import placement; print\\('placement OK'\\); import placement_concave; print\\('placement_concave OK'\\); import photometric; print\\('photometric OK'\\)\")",
+      "Bash(python -c \"import main; print\\('main OK'\\)\")",
+      "Bash(dir C:UsersshresOneDriveDesktopLight *)",
+      "Bash(dotnet build *)",
+      "Bash(awk 'NR>=3714 && NR<=5860' \"C:/Users/shres/OneDrive/Desktop/Light/Drawing1.dxf\")",
+      "Bash(grep -E \"^\\(LINE|CIRCLE|ARC|POLYLINE|LWPOLYLINE|HATCH|SOLID|ELLIPSE|SPLINE|TEXT|MTEXT|INSERT\\)$\")",
+      "Bash(awk 'NR>=3020 && NR<=3357' \"C:/Users/shres/OneDrive/Desktop/Light/Drawing1.dxf\")",
+      "Bash(awk NR>=3020 && NR<=3357 { if \\(prev==\"  0\"\\) print NR\":\"$0; prev=$0 } *)",
+      "Bash(awk ' *)",
+      "Bash(python extract_blocks.py)",
+      "Bash(grep *)",
+      "Bash(cat \"C:\\\\\\\\Users\\\\\\\\shres\\\\\\\\OneDrive\\\\\\\\Desktop\\\\\\\\Light\\\\\\\\LightPlacementPlugin.csproj\")",
+      "Bash(cd \"C:\\\\\\\\Users\\\\\\\\shres\\\\\\\\OneDrive\\\\\\\\Desktop\\\\\\\\Light\")"
+    ]
+  }
+}

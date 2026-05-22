@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>LightPlacementPlugin</AssemblyName>
+    <RootNamespace>LightPlacement</RootNamespace>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>latest</LangVersion>
+    <!-- ZWCAD is a 64-bit host process -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- HttpClient lives in System.Net.Http on net48 -->
+    <Reference Include="System.Net.Http" />
+    <!-- JavaScriptSerializer for parsing the small JSON response -->
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="ZwManaged">
+      <HintPath>C:\Program Files\ZWSOFT\ZWCAD 2026\ZwManaged.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="ZwDatabaseMgd">
+      <HintPath>C:\Program Files\ZWSOFT\ZWCAD 2026\ZwDatabaseMgd.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

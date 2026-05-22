@@ -1,0 +1,149 @@
+PROJECT CONTEXT
+===============
+I am building a ZWCAD lighting design tool for an MEP (Mechanical, Electrical, Plumbing) consulting company. The system has two parts:
+
+1. ZWCAD .NET plugin written in C# (LightPlacementPlugin.cs)
+   - Registers a command called "LIGHT" inside ZWCAD.
+   - Prompts the user for: room type, fixture lumens, and a closed polyline boundary.
+   - Extracts polyline vertices in millimeters from the ZWCAD drawing.
+   - Sends HTTP requests to a local FastAPI backend.
+   - Reads the JSON response and draws circles on a "LIGHTS" layer at each returned coordinate.
+   - Shows a MessageBox with the calculation summary.
+   - Uses the ZwSoft.ZwCAD.* namespaces (ApplicationServices, DatabaseServices, EditorInput, Geometry, Runtime, Colors).
+   - Drawing units are assumed to be MILLIMETERS; coordinates are scaled to meters only when calling /calculate.
+
+2. Python FastAPI backend (main.py, placement.py, config.py)
+   - /calculate endpoint: takes room_type + polyline (in meters) + fixture_lumens, applies the lumen method (E × A) / (UF × MF), returns required number of lights.
+   - /layout endpoint: takes polyline (in mm) + spacing constraints, runs a grid optimizer, returns light coordinates with grid metadata, bounding box, and notes.
+   - Has thoughtful geometry helpers: shoelace area, point-in-polygon, point-to-segment distance, self-intersection detection, convexity check, centroid fallback for tiny rooms, wall clearance dropping.
+
+THE CORE PROBLEM
+================
+The two endpoints are disconnected. /calculate says "you need 12 lights" based on photometric requirements. /layout independently generates a grid that might give 9 or 16 lights based on spacing constraints. The plugin shows both numbers in the MessageBox and tells the user "use a brighter/dimmer fixture to reconcile" — which is not a real solution.
+
+Additionally:
+- No photometric validation: after placing lights, we never check whether the actual lux distribution meets the target.
+- No obstacle handling: real MEP ceilings have columns, beams, ducts, HVAC diffusers, and sprinklers. Lights must avoid these.
+- Concave / L-shaped rooms only use bounding-box grids, which produces poor coverage.
+- The plugin draws plain circles instead of real ZWCAD block references with attributes (wattage, lumens, mounting height, IES file reference).
+- No way to specify mounting height or working plane height.
+- No support for multiple fixture types in one room (e.g., downlights in circulation, panels in work areas).
+
+WHAT I WANT YOU TO BUILD
+========================
+Upgrade BOTH the FastAPI backend AND the C# ZWCAD plugin so they work together as a production-grade MEP lighting design tool. Do the following changes in priority order. Implement all of them.
+
+UPGRADE 1 — Unified design endpoint
+-----------------------------------
+Backend:
+- Add a new endpoint POST /design that internally orchestrates /calculate + /layout in one call.
+- /design accepts: room_type, polyline (mm), fixture_lumens, mounting_height_m (default 3.0), working_plane_m (default 0.8), optional spacing/offset overrides, optional obstacles list.
+- Modify the grid optimizer in placement.py to accept an optional target_count parameter. When provided, pick (Nx, Ny) such that Nx × Ny is as close as possible to (and not less than) target_count, while still respecting min/max spacing and offset constraints. If exact match impossible, prefer the smallest count that is ≥ target_count.
+- If target_count cannot be met within constraints, return a clear note explaining the conflict and what was placed instead.
+- /design returns a single combined JSON containing: lumen calculation, final light positions, grid metadata, bbox, photometric validation results (see Upgrade 2), obstacle/clearance drop counts, and ZWCAD-ready insertion data (see Upgrade 5).
+
+Plugin:
+- Replace the two sequential HTTP calls (CallCalculate + CallLayout) with a single call to /design.
+- Remove the "lumen-method count differs from grid count" reconciliation message — it's no longer needed because /design unifies them.
+- Add new prompts for mounting height (default 3.0 m) and working plane height (default 0.8 m), with sensible defaults so the user can hit Enter to accept.
+
+UPGRADE 2 — Photometric validation
+----------------------------------
+Backend:
+- After placing fixtures in /design (and as a standalone endpoint POST /validate), generate a validation grid of sample points inside the polygon at working plane height. Sample spacing default 500 mm, configurable.
+- For each sample point, calculate illuminance from each fixture using inverse square law with cosine correction:
+      E_i = (I × cos(θ)) / d²
+  where:
+      I = fixture_lumens / π    (Lambertian downlight approximation; configurable)
+      θ = angle from fixture nadir to sample point
+      d = 3D distance from fixture (at ceiling) to sample point (at working plane)
+  Sum contributions from all fixtures for total lux at that sample point.
+- Apply the room's maintenance factor (MF) and utilization factor (UF) from config.py to the final values.
+- Return: avg_lux, min_lux, max_lux, uniformity_ratio (min/avg), meets_target (boolean — is avg_lux >= required_lux), and a warning flag if uniformity_ratio < 0.7 (IES standard for offices/classrooms).
+- Add a new Pydantic model PhotometricResult and include it in the /design response.
+
+Plugin:
+- Display the photometric validation results in the MessageBox: avg/min/max lux, uniformity, and a clear pass/fail indicator.
+- If uniformity < 0.7, color the MessageBox icon as Warning instead of Information.
+
+UPGRADE 3 — Obstacle handling
+-----------------------------
+Backend:
+- Add an optional `obstacles` field to LayoutRequest and DesignRequest: a list of polygons, each with its own vertex list in mm. Each obstacle has a type (column, beam, duct, sprinkler, hvac_diffuser, other) and an optional clearance_mm override.
+- Default clearance from obstacles: 300 mm (configurable in config.py as MIN_OBSTACLE_CLEARANCE_MM).
+- During placement, drop any grid candidate that falls inside any obstacle polygon OR is within clearance distance of any obstacle edge.
+- If dropping obstacle-blocked points leaves a gap larger than max_spacing_mm between adjacent placed lights, add a note flagging the potential dark zone.
+- Track and return separately in the response: n_dropped_by_wall_clearance, n_dropped_by_obstacles.
+
+Plugin:
+- After selecting the room polyline, add an optional prompt: "Select obstacle polylines (columns, ducts) or press Enter to skip:". Allow the user to select multiple polylines using PromptSelectionOptions, filtered to Polyline entities.
+- Extract obstacle vertices the same way as the room polyline and include them in the /design request.
+- Show the obstacle drop count separately in the MessageBox.
+
+UPGRADE 4 — Concave room handling
+---------------------------------
+Backend:
+- Detect concave rooms using the existing _is_convex helper.
+- For concave rooms: attempt simple rectangular decomposition by splitting at reflex vertices (vertices where the interior angle > 180°). Run the grid optimizer in each resulting rectangle, then merge results, deduplicating points within a small tolerance.
+- If decomposition produces too many tiny rectangles (e.g., > 6) or fails, fall back to the current bounding-box grid with an explicit warning note: "Complex concave shape — placement may be suboptimal; consider splitting the room into multiple polylines."
+- Add the decomposition logic in a new helper module placement_concave.py to keep placement.py readable.
+
+Plugin:
+- No change needed beyond what Upgrade 3 already adds. The plugin already supports any closed polyline.
+
+UPGRADE 5 — ZWCAD block references instead of circles
+-----------------------------------------------------
+Backend:
+- Add a `block_data` field to the /design response containing: block_name (e.g., "LIGHT_FIXTURE_2X2_LED"), layer_name (default "E-LITE"), rotation_deg (default 0), scale (default 1.0), fixture attributes (lumens, wattage, mounting_height_m, fixture_type).
+- These values come from a new config section FIXTURE_BLOCKS in config.py, keyed by fixture_type (downlight, panel_2x2, panel_2x4, strip, surface_mount).
+
+Plugin:
+- Replace the DrawLights method's circle drawing with proper block reference insertion using BlockReference.
+- If the block does not exist in the current drawing, fall back to drawing a circle on the LIGHTS layer (preserving current behavior) and show a note in the MessageBox: "Block 'LIGHT_FIXTURE_2X2_LED' not found in drawing — inserted circles instead. Insert the block into your drawing template to enable real fixtures."
+- Set the layer to the layer_name returned by the backend, creating it if needed (same pattern as current LIGHTS layer creation).
+- Attach the fixture attributes as XData or extension dictionary so downstream tools (schedules, BOQs) can read them.
+
+UPGRADE 6 — Better error handling and UX
+-----------------------------------------
+Plugin:
+- If the backend is unreachable, offer to start it automatically if the user has set BACKEND_AUTOSTART_CMD in a config file alongside the DLL.
+- Add a TRANSACTION ABORT on any exception during DrawLights so half-drawn results don't pollute the drawing.
+- Add a new command UNDOLIGHT that erases all entities on the LIGHTS / E-LITE layer added by the last LIGHT run (track inserted ObjectIds in a static field).
+- Validate that the selected polyline has at least 3 unique vertices (existing check is good — keep it).
+
+Backend:
+- Add a /health endpoint that returns server status, config snapshot, and version.
+- Add proper logging using Python's logging module instead of print statements.
+
+CONSTRAINTS AND REQUIREMENTS
+============================
+- Keep the existing FastAPI + Pydantic structure. Do not add heavy dependencies. No shapely, no numpy, no scipy unless absolutely necessary — pure stdlib geometry has been working fine.
+- Keep the C# plugin compatible with .NET Framework 4.7+ (ZWCAD .NET API requirement). Do not switch to .NET Core / .NET 6+.
+- Preserve all existing safety logic: centroid fallback, self-intersection rejection, zero-area rejection, convexity detection, rotated-bbox warning.
+- The plugin must continue to use ZwSoft.ZwCAD.* namespaces. Do not switch to AutoCAD.* namespaces.
+- All units in the plugin remain MILLIMETERS for drawing operations. Only the /calculate scaling (UNIT_SCALE_M = 0.001) stays in place.
+- Keep coordinate precision: use ToString("G17", CultureInfo.InvariantCulture) for all numeric serialization in the plugin.
+- The /design endpoint must remain backward-compatible: /calculate and /layout should still work independently for any existing integrations.
+- Write clear docstrings and comments. The next engineer reading this code should understand it without me explaining anything.
+- Update the README.md with the new endpoints, new prompts, new commands (UNDOLIGHT), and a new architecture diagram.
+
+DELIVERABLES
+============
+1. Updated main.py with /design and /validate endpoints.
+2. Updated placement.py with target_count support and obstacle handling.
+3. New placement_concave.py for rectangular decomposition.
+4. Updated config.py with new constants (MIN_OBSTACLE_CLEARANCE_MM, FIXTURE_BLOCKS, etc.).
+5. Updated LightPlacementPlugin.cs with the new prompts, /design call, block insertion, UNDOLIGHT command, and error handling.
+6. Updated LightPlacementPlugin.csproj if any new references are needed.
+7. Updated README.md.
+8. A short MIGRATION.md explaining how the new /design endpoint replaces the old two-call flow, and how to update existing scripts.
+
+Here is my current code — please read all of it carefully before writing any changes:
+
+[paste config.py]
+[paste main.py]
+[paste placement.py]
+[paste LightPlacementPlugin.cs]
+[paste LightPlacementPlugin.csproj]
+[paste requirements.txt]
+[paste README.md]
