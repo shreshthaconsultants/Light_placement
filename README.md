@@ -1,25 +1,31 @@
 # Light Placement — ZWCAD plugin + FastAPI backend
 
 A production-grade MEP lighting design tool. The ZWCAD `LIGHT` command asks
-for a room type, fixture and mounting parameters, picks a closed polyline
-(plus any obstacle polylines), POSTs the geometry to a local FastAPI server,
-and inserts real fixture **blocks** (with circle fallback) at every grid
-point. A second command `UNDOLIGHT` erases the last run.
+once for wattage, UF/MF, and fan preference, then loops over closed
+polylines — using each polyline's **layer name** as the room type. For each
+room it POSTs the geometry to a local FastAPI server and inserts a
+ceiling-light **block** (and optionally a ceiling-fan block) at every grid
+point. A second command `UNDOLIGHT` erases every fixture from the last run
+across all rooms.
 
 ```
-+----------+   single POST /design   +-------------------------------+
-|  ZWCAD   |  -------------------->  |  FastAPI backend              |
-|  plugin  |   room + polyline + …   |  /design  unified pipeline:   |
-|  LIGHT   |                         |    1. lumen method            |
-|  UNDO    |                         |    2. grid (target count,     |
-|  LIGHT   |                         |       obstacles, concave)     |
-|          |  <--------------------  |    3. photometric validation  |
-+----------+    lights + block_data  |    4. block insertion data    |
-       |                             +-------------------------------+
++------------+  GET /room-types   +-------------------------------+
+|  ZWCAD     | <----------------- |  FastAPI backend              |
+|  LIGHT     |                    |  GET /room-types              |
+|  (loop)    |  POST /design × N  |  POST /design unified:        |
+|  per room: | -----------------> |    1. lumen method            |
+|  - select  |  room_type=<layer> |    2. grid (target count,     |
+|    polyline|  + polyline (mm)   |       obstacles, concave)     |
+|  - read    |                    |    3. photometric validation  |
+|    layer   | <----------------- |    4. block insertion data    |
++------------+  lights + photo +  +-------------------------------+
+       |       block_data
        v
-   BlockReference per light  (or Circle fallback) on the E-LITE layer
+   BlockReference per light on the E-LITE layer (custom block from code)
+   + optional ceiling-fan block on the E-FANS layer
    + XData fixture attributes (lumens, wattage, mounting height, type)
-   MessageBox with photometric pass/fail + uniformity warning
+   ObjectIds from EVERY room accumulated into one UNDOLIGHT group
+   Final aggregate MessageBox: per-room lux + totals + skipped layers
 ```
 
 ## Folder layout
@@ -166,40 +172,69 @@ to launch this command in a new console window.
 
 ## 4. Load and run inside ZWCAD
 
+### Prerequisite — name your polyline layers after room types
+
+Each room polyline's **layer name** is what tells the plugin what kind of
+room it is. Before running `LIGHT`, set every closed-polyline room to a
+layer whose name matches one of the supported room types:
+
+```
+bedroom, living_room, kitchen, toilet, bathroom, corridor, staircase,
+office, conference, classroom, reception, storage, parking, lobby,
+dining_room
+```
+
+Case and spaces don't matter — `Living Room`, `LIVING_ROOM`, and
+`living_room` all map to the same room type. Polylines on any other layer
+(e.g. `0`, `walls`) are skipped with a warning so they don't pollute the
+result.
+
+### Running the command
+
 1. Start ZWCAD.
 2. Make sure the FastAPI server is running.
 3. In the ZWCAD command line: `NETLOAD` → pick `LightPlacementPlugin.dll`.
-4. Type `LIGHT`. Prompts (each height field accepts Enter for the default):
-   - **Room type** → `bedroom` / `office` / `kitchen` / …
-   - **Fixture lumens** [`1000`] → numeric, Enter for default
-   - **Fixture type** [`panel_2x2`] → `downlight` / `panel_2x2` /
-     `panel_2x4` / `strip` / `surface_mount`
-   - **Mounting height in meters** [`3.0`] → numeric
-   - **Working plane height in meters** [`0.8`] → numeric
-   - **Room polyline** → click your closed polyline
-   - **Obstacle polylines** → click columns/ducts/diffusers (or Enter to skip)
-5. A MessageBox shows the lumen-method count, placed count, drop counts,
-   photometric stats (avg/min/max lux + uniformity), and any backend notes.
-   The icon turns **Warning** when the uniformity ratio falls below `0.7`.
-6. Real fixture blocks (e.g. `LIGHT_FIXTURE_2X2_LED`) are inserted on the
-   `E-LITE` layer. If that block is missing from the drawing, circles are
-   drawn on the `LIGHTS` layer instead (and the popup says so).
+4. Type `LIGHT`. **Setup prompts (asked ONCE per run, applied to every room):**
+   - **Fixture wattage in W** [`10`] → numeric, Enter for default. Lumens
+     are derived at 100 lm/W.
+   - **Include UF / MF factors?** [`No`] → `Yes` to derate by the room
+     type's utilization × maintenance factors.
+   - **Place a ceiling fan at the centre of every room?** [`Yes`].
+5. **Selection loop (repeats until you press Enter):**
+   - `Select room polyline #N (its layer name = room type; press Enter to finish):`
+   - Pick a closed polyline. Plugin reads its layer name, looks up the
+     room type, POSTs to `/design`, and draws lights (plus a fan if
+     enabled and the room shape allows one).
+   - Press Enter on an empty selection to end the loop.
+6. A single **aggregate MessageBox** lists per-room photometric results
+   (area, target count, placed count, avg/min/max lux, uniformity, fan
+   position) plus totals across the run and any skipped layers. The icon
+   turns **Warning** when any room's uniformity ratio is below `0.7`.
+7. Lights are drawn as a custom block (`LIGHT_FIXTURE_CUSTOM_V2`,
+   generated from code — no template required) on the `E-LITE` layer.
+   Fans use `CEILING_FAN_CUSTOM_V2` on the `E-FANS` layer.
 
 ### UNDOLIGHT
 
 Type `UNDOLIGHT` after a `LIGHT` run to erase every fixture that run
-inserted. The plugin tracks the inserted `ObjectId`s in a static field for
-the duration of the ZWCAD session.
+inserted **across all rooms** processed in the loop. The plugin
+accumulates inserted `ObjectId`s into a single static list during the
+selection loop, so one undo wipes the whole multi-room layout.
 
 ---
 
 ## 5. Supported room types
 
+Set each room polyline's **layer name** to one of:
+
 `bedroom, living_room, kitchen, toilet, bathroom, corridor, staircase,
 office, conference, classroom, reception, storage, parking, lobby,
 dining_room`
 
-Hit `GET /room-types` for the current list and lux / UF / MF defaults.
+The plugin normalizes layer names to lowercase with underscores
+(`Living Room` → `living_room`) before the lookup. Hit `GET /room-types`
+for the current list and lux / UF / MF defaults — add new entries by
+extending `config.ROOM_DEFAULTS` and restarting the server.
 
 ## Supported fixture types
 
@@ -255,8 +290,9 @@ When the popup shows `meets_target: NO`, the practical levers are:
 | Symptom | Fix |
 |---|---|
 | `Could not reach backend` | Start the FastAPI server, or set up `backend.autostart` next to the DLL. Check port 8000 isn't blocked. |
-| `Unknown room type` popup | Type one of the supported names from `/room-types`. |
-| Popup says "Block ... not found" | Insert the named block into your drawing template (or change `config.FIXTURE_BLOCKS[<type>].block_name` to a block you already have). Circles are placed as a fallback. |
-| Photometric warning despite enough lights | Uniformity ratio (`min/avg`) is < 0.7. Add fixtures near the corners or shrink spacing in `config.py`. |
+| `Polyline is on layer '…' which is not a known room type. Skipping.` | Rename the polyline's layer (e.g. `bedroom`, `office`) to a key from `/room-types`. The plugin lists the valid layer names in the prompt area. |
+| `LIGHT: no rooms processed.` | Every polyline you picked was on an unknown layer (or you pressed Enter immediately). Rename layers and re-run. |
+| Photometric warning despite enough lights | Uniformity ratio (`min/avg`) is < 0.7 in at least one room. Add fixtures near the corners or shrink spacing in `config.py`. |
 | Build error: `ZwSoft.ZwCAD not found` | Wrong HintPath / wrong namespace. See section 3. |
 | `Polyline rejected` | Must be an `LWPOLYLINE`, not a `Line` or 3D `Polyline`. |
+| Ceiling fan missing in a small/odd room | The plugin only places a fan when the polygon centroid (or bbox centre) is inside the room. Notched/L-shaped rooms may not qualify; the per-room block in the summary will say so. |
