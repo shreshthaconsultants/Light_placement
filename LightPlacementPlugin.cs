@@ -101,6 +101,7 @@ namespace LightPlacement
         // Both blocks bumped to V2 when the geometry was redesigned
         // (off-white downlight, white 3-blade fan). The V1 names — if present
         // in a pre-existing drawing — are left untouched.
+        private const string PLUGIN_BUILD = "build v5 FINAL (multi-fan + Jev fan layout)";
         private const string CUSTOM_LIGHT_BLOCK = "LIGHT_FIXTURE_CUSTOM_V2";
         private const string CUSTOM_FAN_BLOCK   = "CEILING_FAN_CUSTOM_V2";
 
@@ -163,6 +164,9 @@ namespace LightPlacement
             if (doc == null) return;
             Editor ed = doc.Editor;
 
+            // Build marker so it is obvious which DLL is loaded.
+            ed.WriteMessage("\nLight Placement plugin " + PLUGIN_BUILD);
+
             try
             {
                 // ---- 1. Fixture wattage → approx lumens (asked once) ----
@@ -219,7 +223,7 @@ namespace LightPlacement
                 // automatically for rooms where the centroid + bbox-centre
                 // both fall outside the polygon (very irregular shapes).
                 PromptKeywordOptions pkoFan = new PromptKeywordOptions(
-                    "\nPlace a ceiling fan at the centre of every room?");
+                    "\nPlace ceiling fans? (number, size and positions are decided per room from its area)");
                 pkoFan.Keywords.Add("Yes");
                 pkoFan.Keywords.Add("No");
                 pkoFan.Keywords.Default = "Yes";
@@ -345,7 +349,7 @@ namespace LightPlacement
                         rr.NumLightsDrawn + " light(s), avg " +
                         rr.AvgLux.ToString("F0", CultureInfo.InvariantCulture) + " lux " +
                         (rr.MeetsTarget ? "OK" : "BELOW TARGET") +
-                        (rr.FanPlaced ? "  + 1 fan" : ""));
+                        (rr.FanPlaced ? "  + " + rr.FanCount + " fan(s)" : ""));
                 }
 
                 // ---- 7. Aggregate summary ----
@@ -367,7 +371,6 @@ namespace LightPlacement
 
                 int totalLights = 0, totalFans = 0;
                 int totalDroppedWall = 0, totalDroppedObs = 0;
-                int totalDroppedFan = 0, totalRelocatedFan = 0;
                 bool anyWarn = false;
 
                 StringBuilder popup = new StringBuilder();
@@ -376,7 +379,7 @@ namespace LightPlacement
                     fixtureWatts.ToString("F1", CultureInfo.InvariantCulture) + " W (" +
                     fixtureLumens.ToString("F0", CultureInfo.InvariantCulture) + " lm)");
                 popup.AppendLine("UF/MF applied    : " + (useUfMf ? "Yes" : "No"));
-                popup.AppendLine("Fans requested   : " + (placeFan ? "Yes (per room)" : "No"));
+                popup.AppendLine("Fans requested   : " + (placeFan ? "Yes (auto count per room)" : "No"));
                 popup.AppendLine();
 
                 foreach (var rr in roomResults)
@@ -389,10 +392,6 @@ namespace LightPlacement
                     popup.AppendLine("  Lights placed: " + rr.NumLightsDrawn);
                     if (rr.DroppedByWall > 0)
                         popup.AppendLine("  Dropped(wall): " + rr.DroppedByWall);
-                    if (rr.DroppedByFan > 0)
-                        popup.AppendLine("  Dropped(fan) : " + rr.DroppedByFan);
-                    if (rr.RelocatedByFan > 0)
-                        popup.AppendLine("  Reloc(fan)   : " + rr.RelocatedByFan);
                     popup.AppendLine("  Avg lux      : " +
                         rr.AvgLux.ToString("F0", CultureInfo.InvariantCulture) +
                         (rr.MeetsTarget ? "  OK" : "  BELOW TARGET"));
@@ -403,9 +402,8 @@ namespace LightPlacement
                         rr.Uniformity.ToString("F2", CultureInfo.InvariantCulture) +
                         (rr.UniformWarn ? "  WARN (<0.7)" : "  OK"));
                     if (rr.FanPlaced)
-                        popup.AppendLine("  Ceiling fan  : 1 at (" +
-                            rr.FanCx.ToString("F0", CultureInfo.InvariantCulture) + ", " +
-                            rr.FanCy.ToString("F0", CultureInfo.InvariantCulture) + ") mm");
+                        popup.AppendLine("  Ceiling fans : " + rr.FanCount + " x " +
+                            rr.FanSweepMm + " mm sweep");
                     if (rr.Notes != null && rr.Notes.Count > 0)
                     {
                         foreach (var note in rr.Notes)
@@ -413,11 +411,9 @@ namespace LightPlacement
                     }
 
                     totalLights       += rr.NumLightsDrawn;
-                    if (rr.FanPlaced) totalFans++;
+                    totalFans         += rr.FanCount;
                     totalDroppedWall  += rr.DroppedByWall;
                     totalDroppedObs   += rr.DroppedByObstacles;
-                    totalDroppedFan   += rr.DroppedByFan;
-                    totalRelocatedFan += rr.RelocatedByFan;
                     if (rr.UniformWarn) anyWarn = true;
                 }
 
@@ -427,10 +423,6 @@ namespace LightPlacement
                 popup.AppendLine("Total fans       : " + totalFans);
                 if (totalDroppedWall > 0)
                     popup.AppendLine("Dropped (walls)  : " + totalDroppedWall);
-                if (totalDroppedFan > 0)
-                    popup.AppendLine("Dropped (fan)    : " + totalDroppedFan);
-                if (totalRelocatedFan > 0)
-                    popup.AppendLine("Relocated (fan)  : " + totalRelocatedFan);
                 popup.AppendLine("Layers used      : " + string.Join(", ", layersUsed));
 
                 if (skippedLayers.Count > 0)
@@ -480,11 +472,9 @@ namespace LightPlacement
             public int    NumLightsDrawn;
             public int    DroppedByWall;
             public int    DroppedByObstacles;
-            public int    DroppedByFan;
-            public int    RelocatedByFan;
             public bool   FanPlaced;
-            public double FanCx;
-            public double FanCy;
+            public int    FanCount;
+            public int    FanSweepMm;
             public double AvgLux;
             public double MinLux;
             public double MaxLux;
@@ -505,7 +495,7 @@ namespace LightPlacement
             bool useUfMf, bool placeFan)
         {
             string designJson = CallDesign(roomType, roomVertsMm, fixtureLumens,
-                                           null, useUfMf).GetAwaiter().GetResult();
+                                           null, useUfMf, placeFan).GetAwaiter().GetResult();
             var design = (Dictionary<string, object>)
                 new JavaScriptSerializer().DeserializeObject(designJson);
 
@@ -535,92 +525,29 @@ namespace LightPlacement
             bool   meetsTarget = Convert.ToBoolean(photo["meets_target"]);
             bool   uniformWarn = Convert.ToBoolean(photo["uniformity_warning"]);
 
-            // -------- Fan placement (per room) --------
-            // Centre is the polygon centroid (shoelace). For L-/U-shapes
-            // where the centroid lies outside the room we fall back to the
-            // bbox centre, and if THAT is also outside we skip the fan for
-            // this room so we never plant it in a notch.
-            double fanCx = 0.0, fanCy = 0.0;
-            int lightsRemovedByFan = 0;
-            int lightsRelocatedByFan = 0;
-            bool effectivePlaceFan = placeFan;
-            if (effectivePlaceFan)
+            // -------- Ceiling fans (decided by the backend) --------
+            // The backend picks how many fans the room gets (by area / room
+            // type), their blade sweep, and positions that keep clear of the
+            // lights and walls. Nothing is relocated here any more.
+            var fans = new List<double[]>();
+            double fanScale = 1.0;
+            int fanSweepMm = 0;
+            if (placeFan && design.ContainsKey("fans_mm") && design["fans_mm"] != null)
             {
-                PolygonCentroidMm(roomVertsMm, out fanCx, out fanCy);
-                if (!PointInPolygonMm(fanCx, fanCy, roomVertsMm))
+                foreach (var item in (object[])design["fans_mm"])
                 {
-                    double bxmin = double.PositiveInfinity, bxmax = double.NegativeInfinity;
-                    double bymin = double.PositiveInfinity, bymax = double.NegativeInfinity;
-                    foreach (var v in roomVertsMm)
+                    var fp = (Dictionary<string, object>)item;
+                    fans.Add(new double[]
                     {
-                        if (v[0] < bxmin) bxmin = v[0];
-                        if (v[0] > bxmax) bxmax = v[0];
-                        if (v[1] < bymin) bymin = v[1];
-                        if (v[1] > bymax) bymax = v[1];
-                    }
-                    fanCx = (bxmin + bxmax) / 2.0;
-                    fanCy = (bymin + bymax) / 2.0;
-                    if (!PointInPolygonMm(fanCx, fanCy, roomVertsMm))
-                    {
-                        effectivePlaceFan = false;
-                    }
+                        Convert.ToDouble(fp["x"], CultureInfo.InvariantCulture),
+                        Convert.ToDouble(fp["y"], CultureInfo.InvariantCulture),
+                    });
                 }
-
-                if (effectivePlaceFan)
+                if (design.ContainsKey("fan_info") && design["fan_info"] != null)
                 {
-                    // Drop any light whose centre would sit under the fan
-                    // housing, but try to RELOCATE each dropped light to a
-                    // position just outside the exclusion ring so the lumen-
-                    // method count is preserved.
-                    double exclusion = FAN_RADIUS_MM + FAN_LIGHT_CLEARANCE_MM;
-                    var kept    = new List<object>(lightsArr.Length);
-                    var dropped = new List<double[]>();
-                    foreach (var item in lightsArr)
-                    {
-                        var p = (Dictionary<string, object>)item;
-                        double lx = Convert.ToDouble(p["x"], CultureInfo.InvariantCulture);
-                        double ly = Convert.ToDouble(p["y"], CultureInfo.InvariantCulture);
-                        double dx = lx - fanCx, dy = ly - fanCy;
-                        if (Math.Sqrt(dx * dx + dy * dy) < exclusion)
-                        {
-                            lightsRemovedByFan++;
-                            dropped.Add(new double[] { lx, ly });
-                            continue;
-                        }
-                        kept.Add(item);
-                    }
-
-                    // Existing kept positions constrain where the next
-                    // relocation can sit so two replacements don't pile up.
-                    var keptPositions = new List<double[]>();
-                    foreach (var item in kept)
-                    {
-                        var p = (Dictionary<string, object>)item;
-                        keptPositions.Add(new double[]
-                        {
-                            Convert.ToDouble(p["x"], CultureInfo.InvariantCulture),
-                            Convert.ToDouble(p["y"], CultureInfo.InvariantCulture),
-                        });
-                    }
-
-                    foreach (var orig in dropped)
-                    {
-                        double rx, ry;
-                        if (TryRelocateOutsideFan(
-                                orig[0], orig[1], fanCx, fanCy, exclusion,
-                                roomVertsMm, keptPositions, out rx, out ry))
-                        {
-                            kept.Add(new Dictionary<string, object>
-                            {
-                                { "x", rx },
-                                { "y", ry },
-                            });
-                            keptPositions.Add(new double[] { rx, ry });
-                            lightsRelocatedByFan++;
-                        }
-                    }
-
-                    lightsArr = kept.ToArray();
+                    var fi = (Dictionary<string, object>)design["fan_info"];
+                    fanScale   = Convert.ToDouble(fi["block_scale"], CultureInfo.InvariantCulture);
+                    fanSweepMm = Convert.ToInt32 (fi["sweep_mm"],    CultureInfo.InvariantCulture);
                 }
             }
 
@@ -632,7 +559,7 @@ namespace LightPlacement
             DrawResult draw = DrawLights(
                 doc, lightsArr, CUSTOM_LIGHT_BLOCK, layerName,
                 rotationDeg * Math.PI / 180.0, scale, fixAttribs,
-                effectivePlaceFan, fanCx, fanCy);
+                fans, fanScale);
 
             // -------- Collate notes for the room ----
             var notesList = new List<string>();
@@ -651,11 +578,9 @@ namespace LightPlacement
                 NumLightsDrawn     = draw.Drawn,
                 DroppedByWall      = n_wall,
                 DroppedByObstacles = n_obs,
-                DroppedByFan       = lightsRemovedByFan,
-                RelocatedByFan     = lightsRelocatedByFan,
-                FanPlaced          = draw.FanDrawn,
-                FanCx              = fanCx,
-                FanCy              = fanCy,
+                FanPlaced          = draw.FansDrawn > 0,
+                FanCount           = draw.FansDrawn,
+                FanSweepMm         = fanSweepMm,
                 AvgLux             = avgLux,
                 MinLux             = minLux,
                 MaxLux             = maxLux,
@@ -791,7 +716,7 @@ namespace LightPlacement
         {
             public int Drawn;
             public bool UsedFallback;   // legacy; always false now that the custom block is generated from code
-            public bool FanDrawn;
+            public int FansDrawn;
             public string LayerUsed;
         }
 
@@ -810,13 +735,14 @@ namespace LightPlacement
             string blockName, string layerName,
             double rotationRad, double scale,
             Dictionary<string, object> fixtureAttribs,
-            bool placeFan, double fanCx, double fanCy)
+            List<double[]> fans, double fanScale)
         {
+            bool placeFan = fans != null && fans.Count > 0;
             DrawResult dr = new DrawResult
             {
                 Drawn = 0,
                 UsedFallback = false,
-                FanDrawn = false,
+                FansDrawn = 0,
                 LayerUsed = layerName,
             };
             int lightCount = lightsArr == null ? 0 : lightsArr.Length;
@@ -867,23 +793,26 @@ namespace LightPlacement
                     }
                 }
 
-                // ---- Ceiling fan ----
+                // ---- Ceiling fans (one BlockReference per backend position) ----
                 if (placeFan)
                 {
                     ObjectId fanLayerId = EnsureLayer(tr, db, FAN_LAYER, FAN_LAYER_COLOR);
                     ObjectId fanDefId   = bt[CUSTOM_FAN_BLOCK];
-                    BlockReference fanBr = new BlockReference(
-                        new Point3d(fanCx, fanCy, 0), fanDefId)
+                    foreach (var fp in fans)
                     {
-                        Rotation = 0.0,
-                        ScaleFactors = new Scale3d(1.0),
-                        LayerId = fanLayerId,
-                    };
-                    ms.AppendEntity(fanBr);
-                    tr.AddNewlyCreatedDBObject(fanBr, true);
+                        BlockReference fanBr = new BlockReference(
+                            new Point3d(fp[0], fp[1], 0), fanDefId)
+                        {
+                            Rotation = 0.0,
+                            ScaleFactors = new Scale3d(fanScale),
+                            LayerId = fanLayerId,
+                        };
+                        ms.AppendEntity(fanBr);
+                        tr.AddNewlyCreatedDBObject(fanBr, true);
 
-                    tracker.Add(fanBr.ObjectId);
-                    dr.FanDrawn = true;
+                        tracker.Add(fanBr.ObjectId);
+                        dr.FansDrawn++;
+                    }
                 }
 
                 tr.Commit();
@@ -984,11 +913,13 @@ namespace LightPlacement
             List<double[]> roomVertsMm,
             double fixtureLumens,
             List<List<double[]>> obstacles,
-            bool useUfMf)
+            bool useUfMf,
+            bool placeFan)
         {
             var sb = new StringBuilder();
             sb.Append("{");
             sb.Append("\"room_type\":\"").Append(Escape(roomType)).Append("\",");
+            sb.Append("\"place_fans\":").Append(placeFan ? "true" : "false").Append(",");
             sb.Append("\"fixture_lumens\":")
               .Append(fixtureLumens.ToString("G17", CultureInfo.InvariantCulture))
               .Append(",");

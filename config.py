@@ -48,6 +48,37 @@ ROOM_DEFAULTS = {
     "parking":      {"lux":  75, "uf": 0.50, "mf": 0.65},
     "lobby":        {"lux": 200, "uf": 0.50, "mf": 0.80},
     "dining_room":  {"lux": 200, "uf": 0.55, "mf": 0.80},
+
+    # --- Added room types (typical CIBSE / NBC India design illuminance) ---
+    "auditorium":      {"lux": 200, "uf": 0.50, "mf": 0.80},
+    "hall":            {"lux": 200, "uf": 0.50, "mf": 0.80},
+    "banquet_hall":    {"lux": 200, "uf": 0.50, "mf": 0.80},
+    "theatre":         {"lux": 150, "uf": 0.50, "mf": 0.80},
+    "meeting_room":    {"lux": 300, "uf": 0.55, "mf": 0.80},
+    "cabin":           {"lux": 400, "uf": 0.55, "mf": 0.80},
+    "library":         {"lux": 400, "uf": 0.55, "mf": 0.80},
+    "laboratory":      {"lux": 500, "uf": 0.55, "mf": 0.80},
+    "workshop":        {"lux": 300, "uf": 0.50, "mf": 0.70},
+    "warehouse":       {"lux": 150, "uf": 0.50, "mf": 0.65},
+    "store_room":      {"lux": 100, "uf": 0.50, "mf": 0.65},
+    "server_room":     {"lux": 300, "uf": 0.50, "mf": 0.80},
+    "electrical_room": {"lux": 200, "uf": 0.50, "mf": 0.70},
+    "utility":         {"lux": 100, "uf": 0.45, "mf": 0.70},
+    "pantry":          {"lux": 200, "uf": 0.50, "mf": 0.75},
+    "canteen":         {"lux": 200, "uf": 0.55, "mf": 0.75},
+    "cafeteria":       {"lux": 200, "uf": 0.55, "mf": 0.75},
+    "restaurant":      {"lux": 150, "uf": 0.55, "mf": 0.80},
+    "hotel_room":      {"lux": 150, "uf": 0.55, "mf": 0.80},
+    "hospital_ward":   {"lux": 150, "uf": 0.55, "mf": 0.80},
+    "waiting_area":    {"lux": 200, "uf": 0.55, "mf": 0.80},
+    "lift_lobby":      {"lux": 150, "uf": 0.50, "mf": 0.80},
+    "passage":         {"lux": 100, "uf": 0.50, "mf": 0.80},
+    "gym":             {"lux": 300, "uf": 0.50, "mf": 0.75},
+    "showroom":        {"lux": 500, "uf": 0.55, "mf": 0.80},
+    "retail":          {"lux": 300, "uf": 0.55, "mf": 0.75},
+    "lounge":          {"lux": 150, "uf": 0.55, "mf": 0.80},
+    "prayer_room":     {"lux": 150, "uf": 0.55, "mf": 0.80},
+    "balcony":         {"lux":  75, "uf": 0.40, "mf": 0.70},
 }
 
 
@@ -210,3 +241,67 @@ ROTATED_BBOX_RATIO = 1.15
 # Corridors and long-thin rooms (ratio below the threshold) are left alone
 # because a single line of lights is the right answer for them.
 SQUARE_ROOM_ASPECT_THRESHOLD = 0.6
+
+
+# ============================================================
+# Even light count  (main.py / POST /design)
+# ============================================================
+
+# When True, /design rounds the lumen-method count UP to the next even number
+# (2, 4, 6, ...) so lights always form a symmetric grid.
+EVEN_COUNT_ONLY = True
+
+# How many even totals above the target the grid selector may consider
+# (target, target+2, ... target+2*N). 0 = exactly the rounded-up target.
+GRID_CANDIDATE_EXTRA_STEPS = 2
+
+# Largest number of candidate grids sent to Jev (keeps the question small).
+GRID_MAX_CANDIDATES = 12
+
+
+# ============================================================
+# Ceiling fans  (fan_placement.py / POST /design with place_fans=true)
+# ============================================================
+# Rules of thumb (ENERGY STAR / manufacturer sizing charts, adapted to metric):
+#   * one fan covers about 9-16 m2: 900 mm sweep to ~9 m2, 1050 to ~12 m2,
+#     1200 to ~16 m2, 1400 beyond that;
+#   * blade tips stay >= 450 mm (18 in) from any wall;
+#   * big halls get SEVERAL fans on an even grid rather than one huge fan.
+# NBC India has no fan-count rule, so these are design-practice values.
+
+# Room types that never get ceiling fans (wet, service, circulation, plant).
+FAN_EXCLUDED_ROOM_TYPES = {
+    "toilet", "bathroom", "kitchen", "staircase", "corridor", "passage",
+    "parking", "lift_lobby", "server_room", "electrical_room", "utility",
+    "balcony", "storage", "store_room",
+}
+
+FAN_SWEEPS_MM = [900, 1050, 1200, 1400]     # standard blade sweeps, small -> large
+FAN_AREA_LIMITS_M2 = [9.0, 12.0, 16.0]      # area per fan up to which each sweep is used
+FAN_MAX_AREA_PER_FAN_M2 = 16.0              # more area than this -> add fans
+FAN_WALL_CLEARANCE_MM = 450.0               # blade tip to wall
+FAN_LIGHT_CLEARANCE_MM = 250.0              # extra gap between fan blade tip and a light
+FAN_MIN_CELL_MM = 2400.0                    # smallest fan-to-fan spacing allowed
+FAN_MAX_CELL_ASPECT = 1.8                  # keep each fan's zone close to square
+FAN_BLOCK_BASE_SWEEP_MM = 1200.0            # sweep drawn by the plugin's fan symbol at scale 1
+
+
+# ============================================================
+# Jev decision model  (jev_client.py)
+# ============================================================
+# Jev (TypeSafe AI) is a "decision model": it answers choice / score / yes-no
+# questions with probabilities instead of generating text. We use ONE choice
+# question per room: "which candidate grid is best?".
+# The API key is read from the environment, never stored in code:
+#     set TYPESAFE_API_KEY=<your key>
+import os
+
+JEV_ENABLED   = os.environ.get("JEV_ENABLED", "1") != "0"
+JEV_BASE_URL  = os.environ.get("JEV_BASE_URL", "https://api.typesafe.ai")
+JEV_PATH      = "/v1/systemone"
+JEV_MODEL     = os.environ.get("JEV_MODEL", "jev-latest")   # pin e.g. "jev-1.13.0"
+JEV_API_KEY   = os.environ.get("TYPESAFE_API_KEY", "")
+JEV_TIMEOUT_S = float(os.environ.get("JEV_TIMEOUT_S", "30"))
+JEV_MAX_RETRIES = 2          # retries on 429 / 529 with exponential backoff
+# Below this confidence the choice is distrusted and the rule-based pick is used.
+JEV_MIN_CONFIDENCE = float(os.environ.get("JEV_MIN_CONFIDENCE", "0.7"))

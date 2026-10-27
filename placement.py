@@ -96,6 +96,13 @@ class LayoutRequest(BaseModel):
                     "spacing falls outside [min_spacing, max_spacing]."
     )
 
+    # When set, the optimizer uses exactly this (cols, rows) grid instead of
+    # searching. /design uses it to apply the grid chosen by Jev.
+    forced_grid: Optional[Tuple[int, int]] = Field(
+        default=None,
+        description="Force an exact (cols, rows) grid, e.g. (3, 2)."
+    )
+
 
 class GridMeta(BaseModel):
     cols: int
@@ -390,6 +397,25 @@ def _exact_factor_grid(W: float, H: float, cfg: "LayoutRequest",
     return best
 
 
+def _forced_grid(W: float, H: float, cfg: "LayoutRequest",
+                 Nx: int, Ny: int) -> Optional[dict]:
+    """Cell-centred plan for an exact (Nx, Ny) grid.
+
+    The room is split into Nx x Ny equal cells and one light sits at the
+    centre of each, so the gap to the wall is HALF the light spacing on each
+    axis (the standard even-lighting layout) instead of a fixed offset.
+    Returns None if the room has no width/height."""
+    if W <= 0 or H <= 0:
+        return None
+    Sx = W / Nx if Nx > 1 else 0.0
+    Sy = H / Ny if Ny > 1 else 0.0
+    Ox = W / (2 * Nx) if Nx > 1 else W / 2
+    Oy = H / (2 * Ny) if Ny > 1 else H / 2
+    return {"Nx": Nx, "Ny": Ny, "offset_mm": Ox,
+            "offset_x_mm": Ox, "offset_y_mm": Oy,
+            "spacing_x_mm": Sx, "spacing_y_mm": Sy}
+
+
 def optimize_grid(W: float, H: float, cfg: "LayoutRequest",
                   target_count: Optional[int] = None) -> Optional[dict]:
     """Pick the (Nx, Ny, O, Sx, Sy) that fits constraints and scores best.
@@ -409,6 +435,10 @@ def optimize_grid(W: float, H: float, cfg: "LayoutRequest",
 
     Returns None when no feasible plan exists (caller falls back to centroid).
     """
+    forced = getattr(cfg, "forced_grid", None)
+    if forced:
+        return _forced_grid(W, H, cfg, forced[0], forced[1])
+
     if (getattr(cfg, "enforce_exact_target", False)
             and target_count and target_count >= 1):
         return _exact_factor_grid(W, H, cfg, target_count)
@@ -636,6 +666,8 @@ def compute_layout(req: LayoutRequest) -> LayoutResponse:
 
     Nx, Ny = plan["Nx"], plan["Ny"]
     O = plan["offset_mm"]
+    Ox = plan.get("offset_x_mm", O)       # per-axis offsets (cell-centred plans)
+    Oy = plan.get("offset_y_mm", O)
     Sx = plan["spacing_x_mm"]
     Sy = plan["spacing_y_mm"]
 
@@ -643,8 +675,8 @@ def compute_layout(req: LayoutRequest) -> LayoutResponse:
     candidates: List[Tuple[int, int, float, float]] = []  # (i, j, x, y)
     for i in range(Nx):
         for j in range(Ny):
-            x = (x_min + x_max) / 2 if Nx == 1 else x_min + O + i * Sx
-            y = (y_min + y_max) / 2 if Ny == 1 else y_min + O + j * Sy
+            x = (x_min + x_max) / 2 if Nx == 1 else x_min + Ox + i * Sx
+            y = (y_min + y_max) / 2 if Ny == 1 else y_min + Oy + j * Sy
             candidates.append((i, j, x, y))
 
     # ----- 6. Filter to polygon interior, by wall clearance, by obstacles -----

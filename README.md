@@ -79,6 +79,25 @@ working plane (inverse-square + cosine correction) to validate the result.
 
 ---
 
+## 1b. Even light count + Jev grid decision
+
+`/design` always places an **even** number of lights (2, 4, 6, ...). The
+lumen-method count (lux x area / lumens, so it depends on bulb wattage) is
+rounded up to even. The code then lists every cols x rows grid with an even
+total that fits the room, and **Jev** (TypeSafe AI decision model) picks the
+best one. The pick is validated and applied via `forced_grid` in
+`placement.py`.
+
+- Code: `jev_client.py`, `main.py` (`_build_grid_candidates`, steps 1c/1d),
+  settings at the end of `config.py`.
+- Enable Jev: `set TYPESAFE_API_KEY=<key>` before starting the backend.
+  Optional: `JEV_MODEL` (default `jev-latest`), `JEV_ENABLED=0` to turn off.
+- No key / error / invalid answer: the built-in rule-based pick is used and
+  the response `notes` say so. `grid_selector.decided_by` is `jev` or `rules`.
+- L-shaped (concave) rooms skip Jev and use the rectangle decomposition.
+
+---
+
 ## 2. Endpoints
 
 | Method | Path         | Purpose                                           |

@@ -39,6 +39,7 @@ from config import (
     UNIFORMITY_WARNING_THRESHOLD,
     CONCAVE_MAX_PIECES,
     SQUARE_ROOM_ASPECT_THRESHOLD,
+    EVEN_COUNT_ONLY, GRID_CANDIDATE_EXTRA_STEPS, GRID_MAX_CANDIDATES,
 )
 
 from placement import (
@@ -47,7 +48,12 @@ from placement import (
     GridMeta, BBox,
     compute_layout,
     polygon_area_abs,
+    is_convex,
+    _all_factor_pairs,
 )
+import jev_client
+import fan_placement
+from config import FAN_BLOCK_BASE_SWEEP_MM
 from photometric import (
     PhotometricResult, validate_placement,
 )
@@ -139,6 +145,11 @@ class DesignRequest(BaseModel):
     # When True, derate the lumen-method formula by the room's UF and MF
     # defaults — produces a more realistic (higher) fixture count. Default
     # False to preserve the original simple count.
+    # When True the response also carries `fans_mm` (ceiling-fan positions)
+    # and `fan_info` — see fan_placement.py.
+    place_fans: bool = Field(default=False,
+                             description="Also decide ceiling-fan count/positions.")
+
     use_uf_mf: bool = Field(
         default=False,
         description="Apply utilization × maintenance factors from "
@@ -169,6 +180,12 @@ class DesignResponse(BaseModel):
     n_dropped_by_obstacles: int
     # Photometric -------------------------------------------------
     photometric: PhotometricResult
+    # Grid selection (even-count rule + Jev decision) ---------------
+    # Ceiling fans (only when the request set place_fans=true) --------
+    fans_mm: List[LayoutPoint] = []
+    fan_info: Optional[Dict[str, Any]] = None  # {count, sweep_mm, scale}
+    even_target_count: Optional[int] = None   # target after rounding up to even
+    grid_selector: Optional[Dict[str, Any]] = None  # who picked the grid + why
     # ZWCAD ------------------------------------------------------
     block_data: BlockData
     # Human-readable -----------------------------------------------
@@ -232,6 +249,75 @@ def _is_prime(n: int) -> bool:
             return False
         d += 2
     return True
+
+
+def _round_up_to_even(n: int) -> int:
+    """2, 4, 6, ... — odd counts are bumped up by one."""
+    return n if n % 2 == 0 else n + 1
+
+
+def _build_grid_candidates(req: "DesignRequest", rd: dict,
+                           x_min: float, y_min: float,
+                           W_mm: float, H_mm: float, even_target: int,
+                           allow_lines: bool) -> List[Dict[str, Any]]:
+    """All (cols, rows) grids whose total is an EVEN number in
+    [even_target, even_target + 2*GRID_CANDIDATE_EXTRA_STEPS] and that fit
+    the room.
+
+    Layout is CELL-CENTRED: the room is cut into cols x rows equal cells with
+    one light in the middle of each, so the wall gap is half the spacing.
+    Every candidate is photometrically simulated, so Jev (and the rule-based
+    fallback) can see the real avg lux / uniformity of each option.
+
+    cols run along X, rows along Y. Single-line grids (1xN) are only offered
+    for corridor-shaped rooms (`allow_lines`) or when the total is 2.
+    Sorted best-first by the rule-based score, so index 0 is also the
+    fallback pick when Jev is unavailable.
+    """
+    MIN_SANE_SPACING = 800.0
+    long_x = W_mm >= H_mm
+    room_aspect = (max(W_mm, H_mm) / min(W_mm, H_mm)) if min(W_mm, H_mm) > 0 else 1e9
+    out: List[Dict[str, Any]] = []
+    for step in range(GRID_CANDIDATE_EXTRA_STEPS + 1):
+        total = even_target + 2 * step
+        for cols, rows in _all_factor_pairs(total):
+            if (cols == 1 or rows == 1) and not (allow_lines or total == 2):
+                continue
+            sx, sy = W_mm / cols, H_mm / rows        # cell size = light spacing
+            gap_x, gap_y = sx / 2, sy / 2            # wall gap = half spacing
+            if (cols > 1 and sx < MIN_SANE_SPACING) or (rows > 1 and sy < MIN_SANE_SPACING):
+                continue
+            if min(gap_x, gap_y) < MIN_WALL_CLEARANCE_MM:
+                continue
+            lights = [LayoutPoint(x=x_min + (i + 0.5) * sx, y=y_min + (j + 0.5) * sy)
+                      for i in range(cols) for j in range(rows)]
+            photo = validate_placement(
+                polyline_mm=req.polyline, lights_mm=lights,
+                fixture_lumens=req.fixture_lumens, required_lux=rd["lux"],
+                mounting_height_m=req.mounting_height_m,
+                working_plane_m=req.working_plane_m,
+                sample_spacing_mm=max(req.validation_sample_spacing_mm, 500.0),
+            )
+            orient_pen = 0 if ((cols >= rows) == long_x or cols == rows) else 1
+            layout_aspect = max(cols, rows) / min(cols, rows)
+            spacing_gap = abs(sx - sy) if (cols > 1 and rows > 1) else 0.0
+            # Rule score: meet target, then uniform, then fewest lights, then shape.
+            score = (0 if photo.meets_target else 1,
+                     0 if not photo.uniformity_warning else 1,
+                     total, orient_pen, abs(layout_aspect - room_aspect), spacing_gap)
+            out.append({
+                "id": f"{cols}x{rows}", "cols": cols, "rows": rows,
+                "total": total,
+                "spacing_x_mm": round(sx, 1), "spacing_y_mm": round(sy, 1),
+                "wall_gap_x_mm": round(gap_x, 1), "wall_gap_y_mm": round(gap_y, 1),
+                "avg_lux": photo.avg_lux, "min_lux": photo.min_lux,
+                "uniformity": photo.uniformity_ratio,
+                "meets_target_lux": photo.meets_target,
+                "uniformity_ok": not photo.uniformity_warning,
+                "_score": score,
+            })
+    out.sort(key=lambda c: c["_score"])
+    return out[:GRID_MAX_CANDIDATES]
 
 
 def _lumen_method(area_m2: float, room_defaults: dict, fixture_lumens: float,
@@ -464,11 +550,73 @@ def design(req: DesignRequest):
         log.info("design: square room, prime target %d → bumped to %d for 2×%d layout",
                  target_count, layout_target, rows)
 
+    # ----- 1c. Even-count rule -----
+    # Lights always come in pairs (2, 4, 6, ...) so the grid is symmetric.
+    even_target = _round_up_to_even(layout_target) if EVEN_COUNT_ONLY else layout_target
+    layout_target = even_target
+
+    # ----- 1d. Grid decision (rules build candidates, Jev picks) -----
+    forced_grid = None
+    selector: Dict[str, Any] = {"decided_by": "rules", "candidates": 0}
+    convex = is_convex([(p.x, p.y) for p in req.polyline])
+    if EVEN_COUNT_ONLY and convex:
+        cands = _build_grid_candidates(
+            req, rd, min(p.x for p in req.polyline), min(p.y for p in req.polyline),
+            W_mm, H_mm, even_target,
+            allow_lines=(short_side / long_side < SQUARE_ROOM_ASPECT_THRESHOLD)
+            if long_side > 0 else False,
+        )
+        selector["candidates"] = len(cands)
+        if cands:
+            pick = cands[0]                         # rule-based default
+            jev_pick = jev_client.choose_grid(
+                room={
+                    "room_type": rt, "area_m2": round(area_m2, 2),
+                    "width_mm": round(W_mm), "height_mm": round(H_mm),
+                    "required_lux": rd["lux"],
+                    "fixture_lumens": req.fixture_lumens,
+                    "target_count": even_target,
+                    "mounting_height_m": req.mounting_height_m,
+                    "working_plane_m": req.working_plane_m,
+                    # Above ~1.5 x (mounting - working plane) lights get patchy.
+                    "max_good_spacing_mm": round(1500 * (req.mounting_height_m
+                                                         - req.working_plane_m)),
+                },
+                candidates=[{k: v for k, v in c.items() if k != "_score"}
+                            for c in cands],
+            )
+            if jev_pick:
+                match = next((c for c in cands if c["id"] == jev_pick["id"]), None)
+                if match:                           # validated: even + fits room
+                    pick = match
+                    selector = {"decided_by": "jev", "model": jev_pick["model"],
+                                "confidence": jev_pick["confidence"],
+                                "probabilities": jev_pick["probabilities"],
+                                "candidates": len(cands)}
+            forced_grid = (pick["cols"], pick["rows"])
+            selector["chosen"] = pick["id"]
+            layout_target = pick["total"]
+
     # ----- 2. Grid placement (with target_count) -----
     layout_req = _design_request_to_layout_request(req, layout_target)
+    if forced_grid:
+        layout_req.forced_grid = forced_grid
     layout_resp: LayoutResponse = compute_layout(layout_req)
     if square_bump_note:
         layout_resp.notes = [square_bump_note] + layout_resp.notes
+    if selector["decided_by"] == "jev":
+        layout_resp.notes.insert(0, f"Grid {selector['chosen']} chosen by Jev "
+                                    f"(confidence {selector['confidence']:.2f}).")
+    elif jev_client.jev_available() is False and forced_grid:
+        layout_resp.notes.insert(0, "Jev not configured (no TYPESAFE_API_KEY) — "
+                                    "grid chosen by built-in rules.")
+    elif forced_grid:
+        layout_resp.notes.insert(0, "Jev unavailable or rejected — "
+                                    "grid chosen by built-in rules.")
+    if layout_resp.count % 2 != 0 and EVEN_COUNT_ONLY:
+        layout_resp.notes.append(
+            f"Placed count {layout_resp.count} is odd because wall/obstacle "
+            f"clearance dropped a point from the even grid.")
 
     # ----- 3. Photometric validation -----
     photo = validate_placement(
@@ -480,6 +628,46 @@ def design(req: DesignRequest):
         working_plane_m=req.working_plane_m,
         sample_spacing_mm=req.validation_sample_spacing_mm,
     )
+
+    # ----- 3b. Ceiling fans (optional) -----
+    fans_out: List[LayoutPoint] = []
+    fan_info: Optional[Dict[str, Any]] = None
+    if req.place_fans:
+        fan_cands, fan_notes = fan_placement.build_candidates(
+            [(p.x, p.y) for p in req.polyline],
+            [(p.x, p.y) for p in layout_resp.lights_mm],
+            rt, area_m2,
+        )
+        layout_resp.notes.extend(fan_notes)
+        fan_info = {"count": 0, "sweep_mm": 0, "block_scale": 1.0,
+                    "decided_by": "none"}
+        if fan_cands:
+            fan_pick = fan_cands[0]                        # rule-based default
+            fan_by = "rules"
+            jev_fan = jev_client.choose_fan_layout(
+                room={
+                    "room_type": rt, "area_m2": round(area_m2, 2),
+                    "width_mm": round(W_mm), "height_mm": round(H_mm),
+                    "mounting_height_m": req.mounting_height_m,
+                    "light_count": layout_resp.count,
+                },
+                candidates=[{k: v for k, v in c.items() if not k.startswith("_")}
+                            for c in fan_cands],
+            )
+            if jev_fan:
+                match = next((c for c in fan_cands if c["id"] == jev_fan["id"]), None)
+                if match:                                   # validated: legal layout
+                    fan_pick, fan_by = match, "jev"
+                    fan_info["confidence"] = jev_fan["confidence"]
+                    fan_info["probabilities"] = jev_fan["probabilities"]
+            fans_out = [LayoutPoint(x=x, y=y) for (x, y) in fan_pick["_fans"]]
+            fan_info.update({
+                "count": len(fans_out), "sweep_mm": fan_pick["sweep_mm"],
+                "block_scale": round(fan_pick["sweep_mm"] / FAN_BLOCK_BASE_SWEEP_MM, 4),
+                "decided_by": fan_by, "chosen": fan_pick["id"],
+                "candidates": len(fan_cands),
+            })
+            layout_resp.notes.append(fan_placement.describe(fan_pick, fan_by))
 
     # ----- 4. Block / fixture metadata -----
     block_data = _resolve_block_data(
@@ -540,6 +728,10 @@ def design(req: DesignRequest):
         n_dropped_by_wall_clearance=layout_resp.n_dropped_by_wall_clearance,
         n_dropped_by_obstacles=layout_resp.n_dropped_by_obstacles,
         photometric=photo,
+        fans_mm=fans_out,
+        fan_info=fan_info,
+        even_target_count=even_target,
+        grid_selector=selector,
         block_data=block_data,
         message=message,
     )
