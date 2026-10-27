@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "PnmB0pZZFts=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\ashut\\OneDrive\\Desktop\\Light_placement-main\\LightPlacementPlugin.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\ashut\\.nuget\\packages\\microsoft.netframework.referenceassemblies\\1.0.3\\microsoft.netframework.referenceassemblies.1.0.3.nupkg.sha512",
+    "C:\\Users\\ashut\\.nuget\\packages\\microsoft.netframework.referenceassemblies.net48\\1.0.3\\microsoft.netframework.referenceassemblies.net48.1.0.3.nupkg.sha512"
+  ],
+  "logs": []
+}

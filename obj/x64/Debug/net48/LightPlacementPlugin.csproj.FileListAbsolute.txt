@@ -1,0 +1,10 @@
+C:\Users\ashut\OneDrive\Desktop\Light_placement-main\bin\x64\Debug\net48\LightPlacementPlugin.dll
+C:\Users\ashut\OneDrive\Desktop\Light_placement-main\bin\x64\Debug\net48\LightPlacementPlugin.pdb
+C:\Users\ashut\OneDrive\Desktop\Light_placement-main\obj\x64\Debug\net48\LightPlacementPlugin.csproj.AssemblyReference.cache
+C:\Users\ashut\OneDrive\Desktop\Light_placement-main\obj\x64\Debug\net48\LightPlacementPlugin.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\ashut\OneDrive\Desktop\Light_placement-main\obj\x64\Debug\net48\LightPlacementPlugin.AssemblyInfoInputs.cache
+C:\Users\ashut\OneDrive\Desktop\Light_placement-main\obj\x64\Debug\net48\LightPlacementPlugin.AssemblyInfo.cs
+C:\Users\ashut\OneDrive\Desktop\Light_placement-main\obj\x64\Debug\net48\LightPlacementPlugin.csproj.CoreCompileInputs.cache
+C:\Users\ashut\OneDrive\Desktop\Light_placement-main\obj\x64\Debug\net48\LightPlacementPlugin.sourcelink.json
+C:\Users\ashut\OneDrive\Desktop\Light_placement-main\obj\x64\Debug\net48\LightPlacementPlugin.dll
+C:\Users\ashut\OneDrive\Desktop\Light_placement-main\obj\x64\Debug\net48\LightPlacementPlugin.pdb
