@@ -25,3 +25,5 @@ C:\LightPlugin\v4\LightPlacementPlugin.dll
 C:\LightPlugin\v4\LightPlacementPlugin.pdb
 C:\LightPlugin\v5\LightPlacementPlugin.dll
 C:\LightPlugin\v5\LightPlacementPlugin.pdb
+C:\Users\ashut\AppData\Local\Temp\claude\C--Users-ashut-OneDrive-Desktop-Light-placement-main\ce0b459f-a578-47b7-a204-ed18b5ab62de\scratchpad\verify_build\LightPlacementPlugin.dll
+C:\Users\ashut\AppData\Local\Temp\claude\C--Users-ashut-OneDrive-Desktop-Light-placement-main\ce0b459f-a578-47b7-a204-ed18b5ab62de\scratchpad\verify_build\LightPlacementPlugin.pdb

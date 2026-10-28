@@ -125,7 +125,9 @@ def choose_fan_layout(room: Dict[str, Any],
                   f"{c['nearest_light_to_blade_mm']} mm, "
                   f"{c['nudged_clear_of_lights']} fan(s) moved to avoid lights; "
                   f"zone shape ratio {c.get('zone_shape_ratio')} (1.0 = square); "
-                  f"area per fan in 9-16 m2 range: "
+                  f"matches standard fan chart: "
+                  f"{'yes' if c.get('matches_standard_chart') else 'no'}; "
+                  f"area per fan within standard range: "
                   f"{'yes' if c.get('area_per_fan_ok') else 'no'}; "
                   f"wall clearance ok: "
                   f"{'yes' if c.get('wall_clearance_ok') else 'no'}")
@@ -142,10 +144,10 @@ def choose_fan_layout(room: Dict[str, Any],
                     "`room`? Work through these steps. Step 1: discard layouts "
                     "where `area_per_fan_ok` is false or `wall_clearance_ok` "
                     "is false or `all_zones_filled` is false. Step 2: of the "
-                    "rest, prefer the layout whose `zone_shape_ratio` is "
-                    "closest to 1.0 (square zones give even air movement). "
-                    "Step 3: if still tied, prefer the one with fewer fans, "
-                    "then fewer fans moved to avoid lights. Large halls and "
+                    "rest, choose the layout with `matches_standard_chart` "
+                    "true (it follows the standard room size to fan size and "
+                    "count chart). Step 3: only if none matches, prefer the "
+                    "`zone_shape_ratio` closest to 1.0, then fewer fans. Large halls and "
                     "auditoriums need several fans, never one."
                 ),
                 "criteria": criteria,

@@ -276,9 +276,26 @@ FAN_EXCLUDED_ROOM_TYPES = {
     "balcony", "storage", "store_room",
 }
 
-FAN_SWEEPS_MM = [900, 1050, 1200, 1400]     # standard blade sweeps, small -> large
-FAN_AREA_LIMITS_M2 = [9.0, 12.0, 16.0]      # area per fan up to which each sweep is used
-FAN_MAX_AREA_PER_FAN_M2 = 16.0              # more area than this -> add fans
+FAN_SWEEPS_MM = [900, 1050, 1200, 1400, 1500]   # standard blade sweeps, small -> large
+FAN_AREA_LIMITS_M2 = [9.0, 12.0, 16.0]      # (legacy, no longer used for sizing)
+FAN_MAX_AREA_PER_FAN_M2 = 26.0              # more area than this per fan is outside the standard chart
+FAN_MIN_AREA_PER_FAN_M2 = 4.0
+# Generic sizing (rooms wider than the chart): (area per fan up to, sweep); above -> 1500.
+FAN_AREA_SWEEP_STEPS = [(11.0, 1050), (14.0, 1200), (21.0, 1400)]
+FAN_ZONE_SPAN_MM = 5750.0                   # one fan per ~5.75 m of each side (matches the chart)
+
+# Standard chart supplied by the user: room width (m) -> room length (m) -> (sweep mm, fan count).
+# Fans are spread along the LENGTH. Width 5 m, length 14/16 m were cut off in the source and are extrapolated.
+FAN_CHART_LENGTHS_M = [4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16]
+FAN_CHART = {
+    3: [(1200, 1), (1400, 1), (1500, 1), (1050, 2), (1200, 2), (1400, 2),
+        (1400, 2), (1400, 2), (1200, 3), (1400, 3), (1400, 3)],
+    4: [(1200, 1), (1400, 1), (1200, 2), (1200, 2), (1200, 2), (1400, 2),
+        (1400, 2), (1500, 2), (1200, 3), (1400, 3), (1500, 3)],
+    5: [(1400, 1), (1400, 1), (1400, 2), (1400, 2), (1400, 2), (1400, 2),
+        (1400, 2), (1500, 2), (1400, 3), (1400, 3), (1400, 3)],
+}
+FAN_CHART_MAX_WIDTH_M = 5.5                 # wider rooms use the generic zone rule
 FAN_WALL_CLEARANCE_MM = 450.0               # blade tip to wall
 FAN_LIGHT_CLEARANCE_MM = 250.0              # extra gap between fan blade tip and a light
 FAN_MIN_CELL_MM = 2400.0                    # smallest fan-to-fan spacing allowed
