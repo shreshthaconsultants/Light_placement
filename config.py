@@ -250,6 +250,14 @@ SQUARE_ROOM_ASPECT_THRESHOLD = 0.6
 # When True, /design rounds the lumen-method count UP to the next even number
 # (2, 4, 6, ...) so lights always form a symmetric grid.
 EVEN_COUNT_ONLY = True
+# Small service rooms are lit by the lumen-method count as it is (often a single
+# light), so an odd total is fine there. The same applies to any room under
+# EVEN_RULE_MIN_AREA_M2.
+EVEN_RULE_EXEMPT_ROOM_TYPES = {
+    "toilet", "bathroom", "balcony", "store_room", "storage", "utility", "pantry",
+    "electrical_room", "server_room", "lift_lobby",
+}
+EVEN_RULE_MIN_AREA_M2 = 5.0
 
 # How many even totals above the target the grid selector may consider
 # (target, target+2, ... target+2*N). 0 = exactly the rounded-up target.
@@ -323,3 +331,20 @@ JEV_TIMEOUT_S = float(os.environ.get("JEV_TIMEOUT_S", "30"))
 JEV_MAX_RETRIES = 2          # retries on 429 / 529 with exponential backoff
 # Below this confidence the choice is distrusted and the rule-based pick is used.
 JEV_MIN_CONFIDENCE = float(os.environ.get("JEV_MIN_CONFIDENCE", "0.7"))
+
+# Concave rooms whose largest inscribed rectangle covers at least this share of the
+# room area are laid out on that "main body" rectangle (lights + fans), like a plain
+# rectangular room. Smaller shares use the per-piece decomposition.
+MAIN_BODY_MIN_FRACTION = 0.50
+# Leftover rectangles smaller than this (area m2 / narrowest side mm) are ignored
+# (door recesses, column notches); bigger ones get their own lights from their area.
+REST_MIN_AREA_M2 = 1.0
+REST_MIN_SIDE_MM = 600.0
+
+# Small extra parts of an irregular room (a leg, an alcove) only need this uniformity
+# (the main room keeps the stricter UNIFORMITY_WARNING_THRESHOLD).
+PART_MIN_UNIFORMITY = 0.5
+
+# A small extra part passes the lux check at this share of the required lux: its lumen-method
+# count (usually 1 light) is the starting point, and the simulation only vetoes a big shortfall.
+PART_LUX_TOLERANCE = 0.85

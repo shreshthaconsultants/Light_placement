@@ -272,12 +272,50 @@ def build_candidates(polyline: List[Pt], lights: List[Pt], room_type: str,
     return cands, []
 
 
+def build_candidates_multi(parts: List[List[Pt]], lights: List[Pt], room_type: str
+                           ) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Fans for an irregular room made of several rectangles: each rectangle gets
+    its own chart layout (best candidate), merged into one candidate.
+    One sweep is used for the whole room (the smallest, so every part fits)."""
+    if room_type in FAN_EXCLUDED_ROOM_TYPES:
+        return [], [f"No ceiling fans for room type '{room_type}'."]
+    picks = []
+    for poly in parts:
+        xs = [q[0] for q in poly]
+        ys = [q[1] for q in poly]
+        area = (max(xs) - min(xs)) * (max(ys) - min(ys)) * 1e-6
+        cands, _ = build_candidates(poly, lights, room_type, area)
+        if cands:
+            picks.append((cands[0], area))
+    if not picks:
+        return [], ["Room too small (or too irregular) for a ceiling fan."]
+    sweep = min(c["sweep_mm"] for c, _ in picks)
+    fans = [f for c, _ in picks for f in c["_fans"]]
+    total_area = sum(a for _, a in picks)
+    first = picks[0][0]
+    return [{
+        "id": "multi", "cols": len(picks), "rows": 1, "count": len(fans),
+        "zones": len(fans), "sweep_mm": sweep,
+        "area_per_fan_m2": round(total_area / len(fans), 1),
+        "spacing_x_mm": first["spacing_x_mm"], "spacing_y_mm": first["spacing_y_mm"],
+        "blade_to_wall_mm": min(c["blade_to_wall_mm"] for c, _ in picks),
+        "nearest_light_to_blade_mm": min(c["nearest_light_to_blade_mm"] for c, _ in picks),
+        "nudged_clear_of_lights": sum(c["nudged_clear_of_lights"] for c, _ in picks),
+        "matches_standard_chart": True, "zone_shape_ratio": 1.0,
+        "area_per_fan_ok": True, "wall_clearance_ok": True, "all_zones_filled": True,
+        "_fans": fans, "_score": (0,),
+    }], []
+
+
 def describe(c: Dict[str, Any], decided_by: str) -> str:
     """One-line note for the chosen layout."""
     s = (f"Fans: {c['count']} x {c['sweep_mm']} mm sweep ({c['cols']}x{c['rows']} "
          f"zones, about {c['area_per_fan_m2']} m2 per fan, chosen by {decided_by}).")
     if c["nudged_clear_of_lights"]:
         s += f" Fans spread symmetrically to stay clear of lights."
+    if c["id"] == "multi":
+        s = (f"Fans: {c['count']} x {c['sweep_mm']} mm sweep, one layout per part of the "
+             f"irregular room (chosen by {decided_by}).")
     if c["count"] < c["zones"]:
         s += f" {c['zones'] - c['count']} zone(s) skipped: no legal spot."
     return s

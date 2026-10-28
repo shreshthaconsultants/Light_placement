@@ -39,7 +39,8 @@ from config import (
     UNIFORMITY_WARNING_THRESHOLD,
     CONCAVE_MAX_PIECES,
     SQUARE_ROOM_ASPECT_THRESHOLD,
-    EVEN_COUNT_ONLY, GRID_CANDIDATE_EXTRA_STEPS, GRID_MAX_CANDIDATES,
+    EVEN_COUNT_ONLY, EVEN_RULE_EXEMPT_ROOM_TYPES, EVEN_RULE_MIN_AREA_M2,
+    GRID_CANDIDATE_EXTRA_STEPS, GRID_MAX_CANDIDATES,
 )
 
 from placement import (
@@ -53,7 +54,9 @@ from placement import (
 )
 import jev_client
 import fan_placement
-from config import FAN_BLOCK_BASE_SWEEP_MM
+from config import (FAN_BLOCK_BASE_SWEEP_MM, MAIN_BODY_MIN_FRACTION,
+                    REST_MIN_AREA_M2, REST_MIN_SIDE_MM, PART_MIN_UNIFORMITY,
+                    PART_LUX_TOLERANCE)
 from photometric import (
     PhotometricResult, validate_placement,
 )
@@ -320,6 +323,18 @@ def _build_grid_candidates(req: "DesignRequest", rd: dict,
     return out[:GRID_MAX_CANDIDATES]
 
 
+def _rect_grid_lights(rect: tuple, n: int) -> List[LayoutPoint]:
+    """n lights at the centres of equal cells of a rectangle (x0, y0, x1, y1);
+    the cols x rows split with the most square cells is used."""
+    x0, y0, x1, y1 = rect
+    W, H = x1 - x0, y1 - y0
+    cols, rows = min(_all_factor_pairs(n),
+                     key=lambda cr: (abs(W / cr[0] - H / cr[1]), cr[0] * cr[1]))
+    sx, sy = W / cols, H / rows
+    return [LayoutPoint(x=x0 + (i + 0.5) * sx, y=y0 + (j + 0.5) * sy)
+            for i in range(cols) for j in range(rows)]
+
+
 def _lumen_method(area_m2: float, room_defaults: dict, fixture_lumens: float,
                   use_uf_mf: bool = False) -> Dict[str, Any]:
     """Lumen-method fixture count.
@@ -533,14 +548,57 @@ def design(req: DesignRequest):
     # 1 makes the count composite and lets a 2×N rectangular grid form.
     # Corridors (aspect below SQUARE_ROOM_ASPECT_THRESHOLD) stay as a line,
     # which is the right answer for them.
-    W_mm, H_mm = _polyline_bbox_dims_mm(req.polyline)
+    # ----- 1-even. Is the even-count rule in force for this room? -----
+    # Small service rooms (bathroom, toilet, store...) and tiny rooms keep the plain
+    # lumen-method count, which is often a single light.
+    even_rule = bool(EVEN_COUNT_ONLY and rt not in EVEN_RULE_EXEMPT_ROOM_TYPES
+                     and area_m2 >= EVEN_RULE_MIN_AREA_M2)
+
+    # ----- 1a. Main body + leftover parts of an irregular room -----
+    # The largest rectangle is laid out like a plain room (even grid, Jev decision,
+    # centred fan). Leftover rectangles (e.g. a leg beside a washroom) get lights
+    # from their own area, and one light is added there if the total would be odd.
+    light_req = req
+    body_note = None
+    rest_rects: List[tuple] = []
+    body_target = None
+    pts_all = [(p.x, p.y) for p in req.polyline]
+    if not is_convex(pts_all):
+        from placement_concave import split_body_and_rest_any
+        sp = split_body_and_rest_any(pts_all)
+        if sp:
+            (bx0, by0, bx1, by1), rests, split_method = sp
+            body_area = (bx1 - bx0) * (by1 - by0) * 1e-6
+            if body_area >= MAIN_BODY_MIN_FRACTION * area_m2:
+                light_req = req.model_copy(update={"polyline": [
+                    LayoutPoint(x=bx0, y=by0), LayoutPoint(x=bx1, y=by0),
+                    LayoutPoint(x=bx1, y=by1), LayoutPoint(x=bx0, y=by1)]})
+                rest_rects = [r for r in rests
+                              if (r[2] - r[0]) * (r[3] - r[1]) * 1e-6 >= REST_MIN_AREA_M2
+                              and min(r[2] - r[0], r[3] - r[1]) >= REST_MIN_SIDE_MM]
+                log.info("design: irregular room (%s split) body=%.0fx%.0f mm, rests=%s, "
+                         "%d vertices, area=%.2f m2",
+                         split_method, bx1 - bx0, by1 - by0,
+                         [(round(r[2] - r[0]), round(r[3] - r[1])) for r in rest_rects],
+                         len(pts_all), area_m2)
+                body_target = _lumen_method(body_area, rd, req.fixture_lumens,
+                                            req.use_uf_mf)["number_of_lights"]
+                body_note = (f"Irregular room: main body {(bx1 - bx0) / 1000:.2f} x "
+                             f"{(by1 - by0) / 1000:.2f} m laid out as a plain room"
+                             + (f", plus {len(rest_rects)} extra part(s) lit separately."
+                                if rest_rects else "."))
+    if light_req is req and not is_convex(pts_all):
+        log.info("design: irregular room NOT split (no usable main body); %d vertices, "
+                 "area=%.2f m2, first vertices=%s", len(pts_all), area_m2,
+                 [(round(x), round(y)) for x, y in pts_all[:8]])
+    W_mm, H_mm = _polyline_bbox_dims_mm(light_req.polyline)
     short_side = min(W_mm, H_mm)
     long_side  = max(W_mm, H_mm)
     square_ish = long_side > 0 and (short_side / long_side) >= SQUARE_ROOM_ASPECT_THRESHOLD
-    layout_target  = target_count
+    layout_target  = body_target if body_target is not None else target_count
     square_bump_note = None
-    if square_ish and target_count > 2 and _is_prime(target_count):
-        layout_target = target_count + 1
+    if even_rule and square_ish and layout_target > 2 and _is_prime(layout_target):
+        layout_target = layout_target + 1
         rows = layout_target // 2
         square_bump_note = (
             f"Square-room layout: lumen-method asked for {target_count} fixture(s); "
@@ -552,16 +610,17 @@ def design(req: DesignRequest):
 
     # ----- 1c. Even-count rule -----
     # Lights always come in pairs (2, 4, 6, ...) so the grid is symmetric.
-    even_target = _round_up_to_even(layout_target) if EVEN_COUNT_ONLY else layout_target
+    even_target = _round_up_to_even(layout_target) if even_rule else layout_target
     layout_target = even_target
 
     # ----- 1d. Grid decision (rules build candidates, Jev picks) -----
     forced_grid = None
     selector: Dict[str, Any] = {"decided_by": "rules", "candidates": 0}
-    convex = is_convex([(p.x, p.y) for p in req.polyline])
-    if EVEN_COUNT_ONLY and convex:
+    convex = is_convex([(p.x, p.y) for p in light_req.polyline])
+    if even_rule and convex:
         cands = _build_grid_candidates(
-            req, rd, min(p.x for p in req.polyline), min(p.y for p in req.polyline),
+            light_req, rd, min(p.x for p in light_req.polyline),
+            min(p.y for p in light_req.polyline),
             W_mm, H_mm, even_target,
             allow_lines=(short_side / long_side < SQUARE_ROOM_ASPECT_THRESHOLD)
             if long_side > 0 else False,
@@ -578,6 +637,14 @@ def design(req: DesignRequest):
                     "target_count": even_target,
                     "mounting_height_m": req.mounting_height_m,
                     "working_plane_m": req.working_plane_m,
+                    "room_shape": ("main body of an irregular room; the extra parts "
+                                   "listed in extra_parts are lit separately"
+                                   if light_req is not req else "plain rectangle"),
+                    "extra_parts": [{"width_mm": round(r[2] - r[0]),
+                                     "height_mm": round(r[3] - r[1]),
+                                     "area_m2": round((r[2] - r[0]) * (r[3] - r[1]) * 1e-6, 2)}
+                                    for r in rest_rects],
+                    "whole_room_area_m2": round(area_m2, 2),
                     # Above ~1.5 x (mounting - working plane) lights get patchy.
                     "max_good_spacing_mm": round(1500 * (req.mounting_height_m
                                                          - req.working_plane_m)),
@@ -598,12 +665,79 @@ def design(req: DesignRequest):
             layout_target = pick["total"]
 
     # ----- 2. Grid placement (with target_count) -----
-    layout_req = _design_request_to_layout_request(req, layout_target)
+    layout_req = _design_request_to_layout_request(light_req, layout_target)
     if forced_grid:
         layout_req.forced_grid = forced_grid
     layout_resp: LayoutResponse = compute_layout(layout_req)
+    part_notes: List[str] = []
+    if rest_rects:
+        extra: List[LayoutPoint] = []
+        n_body = layout_resp.count
+        for r in rest_rects:
+            pw, ph_ = r[2] - r[0], r[3] - r[1]
+            n0 = max(1, _lumen_method(pw * ph_ * 1e-6, rd, req.fixture_lumens,
+                                      req.use_uf_mf)["number_of_lights"])
+            poly_r = [LayoutPoint(x=r[0], y=r[1]), LayoutPoint(x=r[2], y=r[1]),
+                      LayoutPoint(x=r[2], y=r[3]), LayoutPoint(x=r[0], y=r[3])]
+            pcands = []
+            for n in range(1, min(n0 + 1, 4) + 1):
+                lts = _rect_grid_lights(r, n)
+                pp = validate_placement(
+                    polyline_mm=poly_r,
+                    # light spilling in from the rest of the room counts too
+                    lights_mm=list(layout_resp.lights_mm) + extra + lts,
+                    fixture_lumens=req.fixture_lumens, required_lux=rd["lux"],
+                    mounting_height_m=req.mounting_height_m,
+                    working_plane_m=req.working_plane_m,
+                    sample_spacing_mm=min(max(req.validation_sample_spacing_mm, 250.0),
+                                          500.0),
+                )
+                cols_ = len({round(p.x) for p in lts})
+                rows_ = len({round(p.y) for p in lts})
+                pcands.append({
+                    "id": str(n), "count": n,
+                    "spacing_x_mm": round(pw / cols_, 1), "spacing_y_mm": round(ph_ / rows_, 1),
+                    "avg_lux": pp.avg_lux, "min_lux": pp.min_lux,
+                    "uniformity": pp.uniformity_ratio,
+                    "meets_target_lux": pp.avg_lux >= PART_LUX_TOLERANCE * rd["lux"],
+                    "uniformity_ok": pp.uniformity_ratio >= PART_MIN_UNIFORMITY,
+                    "is_lumen_method_count": n == n0,
+                    "total_lights_in_room_if_chosen": n_body + len(extra) + n,
+                    "nearest_light_in_main_part_mm": round(min(
+                        math.hypot(a.x - b.x, a.y - b.y)
+                        for a in lts for b in layout_resp.lights_mm)),
+                })
+            # Rule: fewest lights that reach the target with good uniformity.
+            pick_p = next((c for c in pcands if c["meets_target_lux"] and c["uniformity_ok"]),
+                          next((c for c in pcands if c["meets_target_lux"]), pcands[-1]))
+            by = "rules"
+            jp = jev_client.choose_part_lights(
+                room={"room_type": rt, "required_lux": rd["lux"],
+                      "fixture_lumens": req.fixture_lumens,
+                      "main_part_lights": n_body,
+                      "lights_already_placed_elsewhere": n_body + len(extra),
+                      "whole_room_area_m2": round(area_m2, 2),
+                      "even_rule_applies_to_extra_parts": False,
+                      "mounting_height_m": req.mounting_height_m},
+                part={"width_mm": round(pw), "height_mm": round(ph_),
+                      "lumen_method_count": n0,
+                      "area_m2": round(pw * ph_ * 1e-6, 2)},
+                candidates=pcands,
+            )
+            if jp:
+                hit = next((c for c in pcands if c["id"] == jp["id"]), None)
+                if hit:
+                    pick_p, by = hit, "Jev"
+            extra += _rect_grid_lights(r, pick_p["count"])
+            part_notes.append(f"Extra part {pw / 1000:.2f} x {ph_ / 1000:.2f} m: "
+                              f"{pick_p['count']} light(s) (chosen by {by}).")
+        layout_resp.lights_mm = list(layout_resp.lights_mm) + extra
+        layout_resp.count = len(layout_resp.lights_mm)
     if square_bump_note:
         layout_resp.notes = [square_bump_note] + layout_resp.notes
+    if body_note:
+        layout_resp.notes.insert(0, body_note)
+    layout_resp.notes.extend(part_notes)
     if selector["decided_by"] == "jev":
         layout_resp.notes.insert(0, f"Grid {selector['chosen']} chosen by Jev "
                                     f"(confidence {selector['confidence']:.2f}).")
@@ -613,7 +747,7 @@ def design(req: DesignRequest):
     elif forced_grid:
         layout_resp.notes.insert(0, "Jev unavailable or rejected — "
                                     "grid chosen by built-in rules.")
-    if layout_resp.count % 2 != 0 and EVEN_COUNT_ONLY:
+    if layout_resp.count % 2 != 0 and even_rule and not rest_rects:
         layout_resp.notes.append(
             f"Placed count {layout_resp.count} is odd because wall/obstacle "
             f"clearance dropped a point from the even grid.")
@@ -633,11 +767,21 @@ def design(req: DesignRequest):
     fans_out: List[LayoutPoint] = []
     fan_info: Optional[Dict[str, Any]] = None
     if req.place_fans:
-        fan_cands, fan_notes = fan_placement.build_candidates(
-            [(p.x, p.y) for p in req.polyline],
-            [(p.x, p.y) for p in layout_resp.lights_mm],
-            rt, area_m2,
-        )
+        fan_lights = [(p.x, p.y) for p in layout_resp.lights_mm]
+        parts = None
+        if not is_convex([(p.x, p.y) for p in light_req.polyline]) and light_req is req:
+            from placement_concave import decompose_into_rectangles
+            dec = decompose_into_rectangles([(p.x, p.y) for p in light_req.polyline])
+            if dec.success and len(dec.rectangles) > 1:
+                parts = [[(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                         for x0, y0, x1, y1 in dec.rectangles]
+        if parts:
+            fan_cands, fan_notes = fan_placement.build_candidates_multi(parts, fan_lights, rt)
+        else:
+            fan_cands, fan_notes = fan_placement.build_candidates(
+                [(p.x, p.y) for p in light_req.polyline], fan_lights,
+                rt, _polygon_area_m2_from_mm(light_req.polyline),
+            )
         layout_resp.notes.extend(fan_notes)
         fan_info = {"count": 0, "sweep_mm": 0, "block_scale": 1.0,
                     "decided_by": "none"}
@@ -661,9 +805,17 @@ def design(req: DesignRequest):
                     fan_info["confidence"] = jev_fan["confidence"]
                     fan_info["probabilities"] = jev_fan["probabilities"]
             fans_out = [LayoutPoint(x=x, y=y) for (x, y) in fan_pick["_fans"]]
+            fan_sweep = fan_pick["sweep_mm"]
+            for r in rest_rects:                      # leftover parts of the room
+                rc, _ = fan_placement.build_candidates(
+                    [(r[0], r[1]), (r[2], r[1]), (r[2], r[3]), (r[0], r[3])], fan_lights,
+                    rt, (r[2] - r[0]) * (r[3] - r[1]) * 1e-6)
+                if rc:
+                    fans_out += [LayoutPoint(x=x, y=y) for (x, y) in rc[0]["_fans"]]
+                    fan_sweep = min(fan_sweep, rc[0]["sweep_mm"])
             fan_info.update({
-                "count": len(fans_out), "sweep_mm": fan_pick["sweep_mm"],
-                "block_scale": round(fan_pick["sweep_mm"] / FAN_BLOCK_BASE_SWEEP_MM, 4),
+                "count": len(fans_out), "sweep_mm": fan_sweep,
+                "block_scale": round(fan_sweep / FAN_BLOCK_BASE_SWEEP_MM, 4),
                 "decided_by": fan_by, "chosen": fan_pick["id"],
                 "candidates": len(fan_cands),
             })

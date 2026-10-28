@@ -209,3 +209,70 @@ def choose_grid(room: Dict[str, Any],
     return {"id": pick, "confidence": conf,
             "probabilities": ans.get("probabilities"),
             "model": resp.get("model")}
+
+
+PART_QUESTION_ID = "best_part_lights"
+
+
+def choose_part_lights(room: Dict[str, Any], part: Dict[str, Any],
+                       candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Ask Jev how many lights an extra part of an irregular room should get.
+
+    The main part of the room already has its (even) grid; `part` is a smaller
+    rectangle (a leg, an alcove) lit on its own, where an ODD count is fine.
+    candidates: [{"id": "1", "count": 1, "avg_lux": ..., "meets_target_lux": bool,
+                  "uniformity": ..., "uniformity_ok": bool, ...}, ...]
+    Same contract as choose_grid: dict or None (caller falls back to the rule)."""
+    if not jev_available() or len(candidates) < 2:
+        return None
+
+    criteria = {
+        c["id"]: (f"{c['count']} light(s) in the {part['width_mm']:.0f} x "
+                  f"{part['height_mm']:.0f} mm part, spacing {c['spacing_x_mm']:.0f} x "
+                  f"{c['spacing_y_mm']:.0f} mm, simulated average {c['avg_lux']:.0f} lux "
+                  f"(target met within 15%: {'yes' if c['meets_target_lux'] else 'no'}), "
+                  f"uniformity {c['uniformity']:.2f} "
+                  f"({'good' if c['uniformity_ok'] else 'poor, below 0.5'}); nearest light in "
+                  f"the main part {c['nearest_light_in_main_part_mm']:.0f} mm away; "
+                  f"room total would be {c['total_lights_in_room_if_chosen']} light(s)")
+        for c in candidates
+    }
+    body = {
+        "model": JEV_MODEL,
+        "state": {"room": room, "extra_part": part, "candidate_counts": candidates},
+        "questions": {
+            PART_QUESTION_ID: {
+                "type": "choice",
+                "instructions": (
+                    "`extra_part` is a smaller section of an irregular room whose "
+                    "main section already has its lights. How many lights should "
+                    "this part get? An odd count (1, 3, ...) is fine. Decide in "
+                    "this order: (1) the simulated average lux must reach "
+                    "at least 85% of `room.required_lux` (`extra_part.lumen_method_count` "
+                    "is the count the lumen method gives for this part's area, "
+                    "usually 1); (2) among those, uniformity at least 0.5; "
+                    "(3) then choose the fewest lights. Small or narrow parts "
+                    "normally need only one light, and the room total may be odd "
+                    "(`room.even_rule_applies_to_extra_parts` is false). Light "
+                    "from the main part already reaches this part, which the "
+                    "simulated lux includes."
+                ),
+                "criteria": criteria,
+            }
+        },
+    }
+    valid_ids = set(criteria)
+    try:
+        resp = _post(body)
+        ans = resp["answers"][PART_QUESTION_ID]
+        pick = ans["choice"]
+        conf = float(ans.get("confidence", 0.0))
+    except Exception as exc:
+        log.warning("Jev part-lights call failed (%s) - using rule.", exc)
+        return None
+    if pick not in valid_ids or conf < JEV_MIN_CONFIDENCE:
+        log.info("Jev part pick %r rejected (confidence %.2f).", pick, conf)
+        return None
+    log.info("Jev chose %s light(s) for the extra part (confidence %.2f)", pick, conf)
+    return {"id": pick, "confidence": conf,
+            "probabilities": ans.get("probabilities"), "model": resp.get("model")}
