@@ -298,6 +298,7 @@ FAN_CHART = {
 FAN_CHART_MAX_WIDTH_M = 5.5                 # wider rooms use the generic zone rule
 FAN_WALL_CLEARANCE_MM = 450.0               # blade tip to wall
 FAN_LIGHT_CLEARANCE_MM = 250.0              # extra gap between fan blade tip and a light
+FAN_LIGHT_TIGHT_MM = 150.0                  # minimum blade-tip to light gap when centring needs it
 FAN_MIN_CELL_MM = 2400.0                    # smallest fan-to-fan spacing allowed
 FAN_MAX_CELL_ASPECT = 1.8                  # keep each fan's zone close to square
 FAN_BLOCK_BASE_SWEEP_MM = 1200.0            # sweep drawn by the plugin's fan symbol at scale 1

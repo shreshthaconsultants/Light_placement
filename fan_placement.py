@@ -18,8 +18,8 @@ Design rules (numbers in config.py "Ceiling fans"):
     one fan per ~5.75 m of each side, sweep from the area each fan serves.
   * Blade tips stay >= 450 mm from every wall (the sweep is shrunk if needed).
   * Fans sit at the centre of their equal zone, so the pattern is even. If a
-    fan would sit on a light, the WHOLE pattern is shifted together (never one
-    fan alone), so the fans stay evenly spaced.
+    fan would sit on a light, the grid is squeezed or spread symmetrically about
+    the room centre (never one fan alone), so the pattern stays even and centred.
 
 All distances are MILLIMETERS.
 """
@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from config import (
     FAN_EXCLUDED_ROOM_TYPES, FAN_SWEEPS_MM, FAN_AREA_SWEEP_STEPS,
     FAN_MAX_AREA_PER_FAN_M2, FAN_MIN_AREA_PER_FAN_M2, FAN_WALL_CLEARANCE_MM,
-    FAN_LIGHT_CLEARANCE_MM, FAN_MIN_CELL_MM, FAN_ZONE_SPAN_MM,
+    FAN_LIGHT_CLEARANCE_MM, FAN_LIGHT_TIGHT_MM, FAN_MIN_CELL_MM, FAN_ZONE_SPAN_MM,
     FAN_CHART, FAN_CHART_LENGTHS_M, FAN_CHART_MAX_WIDTH_M,
 )
 from placement import point_in_polygon, min_distance_to_polygon
@@ -84,13 +84,16 @@ def _clear(x: float, y: float, radius: float, pts: List[Pt], wall_gap: float,
     return True
 
 
-def _place_pattern(centres: List[Pt], radius: float, reach: float, pts: List[Pt],
-                   lights: List[Pt]) -> Tuple[List[Pt], int]:
-    """Place the fans so the pattern stays even.
+def _place_pattern(centres: List[Pt], cols: int, rows: int, radius: float,
+                   reach: float, pts: List[Pt], lights: List[Pt],
+                   strict: bool = False, translate: bool = True) -> Tuple[List[Pt], int]:
+    """Place the fans so the pattern stays even AND symmetric in the room.
 
-    1. Centres as-is, then the whole pattern shifted by a small common offset
-       (smallest first) until every fan clears walls and lights.
-    2. Only if no common shift works, nudge fans one by one (relaxed gaps).
+    1. Zone centres as-is, then the grid squeezed / spread symmetrically about
+       the room centre (columns move by +-sx, rows by +-sy, mirrored), smallest
+       change first, until every fan clears walls and lights. A single column
+       or row can only translate.
+    2. Only if no symmetric change works, nudge fans one by one (relaxed gaps).
     Returns (positions, number of fans that moved off their zone centre)."""
     fan_gap = 2 * radius + 300.0
 
@@ -102,21 +105,36 @@ def _place_pattern(centres: List[Pt], radius: float, reach: float, pts: List[Pt]
             placed.append((x, y))
         return True
 
-    offsets: List[Tuple[float, float]] = [(0.0, 0.0)]
-    step = 150.0
-    r = step
-    while r <= reach:
-        n = max(8, int(2 * math.pi * r / step))
-        offsets += [(r * math.cos(2 * math.pi * k / n), r * math.sin(2 * math.pi * k / n))
-                    for k in range(n)]
-        r += step
+    def factor(i: int, n: int) -> float:
+        if n == 1:
+            return 1.0 if translate else 0.0     # a lone column/row can only translate
+        return (i - (n - 1) / 2.0) / ((n - 1) / 2.0)
 
-    for wall_gap, light_gap in ((FAN_WALL_CLEARANCE_MM, FAN_LIGHT_CLEARANCE_MM),
-                                (FAN_WALL_CLEARANCE_MM, 0.0)):
-        for dx, dy in offsets:
-            shifted = [(x + dx, y + dy) for x, y in centres]
-            if ok(shifted, wall_gap, light_gap):
-                return shifted, (len(shifted) if (dx or dy) else 0)
+    step = 100.0
+    vals = [0.0]
+    v = step
+    while v <= reach:
+        vals += [v, -v]
+        v += step
+    combos = sorted(((sx, sy) for sx in (vals if (translate or cols > 1) else [0.0])
+                     for sy in (vals if (translate or rows > 1) else [0.0])),
+                    key=lambda c: (max(abs(c[0]), abs(c[1])), abs(c[0]) + abs(c[1])))
+
+    def moved_pattern(sx: float, sy: float) -> List[Pt]:
+        return [(x + sx * factor(i, cols), y + sy * factor(j, rows))
+                for (i, j), (x, y) in zip(((i, j) for i in range(cols) for j in range(rows)),
+                                          centres)]
+
+    # Centred beats extra clearance: for each symmetric change (smallest first)
+    # try the full blade-to-light gap, then a tight one, before moving further.
+    for sx, sy in combos:
+        cand = moved_pattern(sx, sy)
+        for light_gap in (FAN_LIGHT_CLEARANCE_MM, FAN_LIGHT_TIGHT_MM):
+            if ok(cand, FAN_WALL_CLEARANCE_MM, light_gap):
+                return cand, (len(cand) if (sx or sy) else 0)
+
+    if strict:
+        return [], 0
 
     # Last resort: per-fan nudge with relaxed gaps.
     out: List[Pt] = []
@@ -125,10 +143,10 @@ def _place_pattern(centres: List[Pt], radius: float, reach: float, pts: List[Pt]
         for wall_gap, light_gap in ((FAN_WALL_CLEARANCE_MM, FAN_LIGHT_CLEARANCE_MM),
                                     (300.0, 0.0)):
             spot = None
-            for dx, dy in offsets:
-                if _clear(nx + dx, ny + dy, radius, pts, wall_gap, lights, light_gap,
+            for sx, sy in combos:
+                if _clear(nx + sx, ny + sy, radius, pts, wall_gap, lights, light_gap,
                           out, fan_gap):
-                    spot = (nx + dx, ny + dy)
+                    spot = (nx + sx, ny + sy)
                     break
             if spot:
                 moved += bool(spot != (nx, ny))
@@ -151,12 +169,43 @@ def _layout_for_grid(cols: int, rows: int, sweep_hint: int, matches_chart: bool,
     if not allowed:
         return None
     sweep = allowed[-1]
-    radius = sweep / 2.0
-
     centres = [(x_min + (i + 0.5) * cell_x, y_min + (j + 0.5) * cell_y)
                for i in range(cols) for j in range(rows)]
     reach = 0.3 * min(cell_x, cell_y)
-    fans, nudged = _place_pattern(centres, radius, reach, polyline, lights)
+
+    # 1. Keep every fan exactly at its zone centre, stepping the sweep down
+    #    (at most two standard sizes) if a light is in the way.
+    fans: List[Pt] = []
+    nudged = 0
+    for sw in reversed(allowed[-3:]):
+        got, _ = _place_pattern(centres, cols, rows, sw / 2.0, 0.0, polyline, lights,
+                                strict=True)
+        if got:
+            sweep, fans = sw, got
+            break
+    # 2. Otherwise spread / squeeze the grid symmetrically about the room
+    #    centre (same sweep first, then smaller), so the pattern stays centred.
+    if not fans:
+        for sw in reversed(allowed[-3:]):
+            got, _ = _place_pattern(centres, cols, rows, sw / 2.0, reach, polyline,
+                                    lights, strict=True, translate=False)
+            if got:
+                sweep, fans, nudged = sw, got, len(got)
+                break
+    # 3. Allow a lone column/row to translate into a gap of the light grid,
+    #    stepping the sweep down as far as needed to clear the lights.
+    if not fans:
+        for sw in reversed(allowed):
+            got, _ = _place_pattern(centres, cols, rows, sw / 2.0, reach, polyline,
+                                    lights, strict=True)
+            if got:
+                sweep, fans, nudged = sw, got, len(got)
+                break
+    # 4. Last resort: per-fan nudges with relaxed gaps.
+    if not fans:
+        fans, nudged = _place_pattern(centres, cols, rows, sweep / 2.0, reach,
+                                      polyline, lights)
+    radius = sweep / 2.0
     if not fans:
         return None
 
@@ -228,7 +277,7 @@ def describe(c: Dict[str, Any], decided_by: str) -> str:
     s = (f"Fans: {c['count']} x {c['sweep_mm']} mm sweep ({c['cols']}x{c['rows']} "
          f"zones, about {c['area_per_fan_m2']} m2 per fan, chosen by {decided_by}).")
     if c["nudged_clear_of_lights"]:
-        s += f" Pattern shifted to stay clear of lights."
+        s += f" Fans spread symmetrically to stay clear of lights."
     if c["count"] < c["zones"]:
         s += f" {c['zones'] - c['count']} zone(s) skipped: no legal spot."
     return s
