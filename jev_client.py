@@ -70,7 +70,7 @@ def build_request(room: Dict[str, Any],
              f"{c.get('wall_gap_y_mm', 0):.0f} mm")
         if "avg_lux" in c:
             s += (f", simulated average {c['avg_lux']:.0f} lux "
-                  f"(target met: {'yes' if c.get('meets_target_lux') else 'no'}), "
+                  f"(target met within 15%: {'yes' if c.get('meets_target_lux') else 'no'}), "
                   f"uniformity {c.get('uniformity', 0):.2f} "
                   f"({'good' if c.get('uniformity_ok') else 'poor, below 0.7'})")
         return s
@@ -84,11 +84,15 @@ def build_request(room: Dict[str, Any],
                 "type": "choice",
                 "instructions": (
                     "Which candidate grid in `candidate_grids` is the best "
-                    "ceiling-light layout for `room`? Each candidate places "
-                    "one light in the centre of equal cells, so the gap to "
-                    "the wall is half the spacing. Decide in this order: "
-                    "(1) the simulated average lux must reach "
-                    "`room.required_lux`; (2) uniformity must be at least "
+                    "ceiling-light layout for `room`? Each candidate keeps a "
+                    "fixed gap to the walls (450 mm on the room's shorter "
+                    "side, 600 mm on the longer side, as in standard site "
+                    "practice) and spreads the lights evenly in between. "
+                    "Decide in this order: (1) the simulated average lux "
+                    "must reach at least 85% of `room.required_lux` (the "
+                    "simulation counts direct light only and ignores wall and "
+                    "ceiling reflections, so it reads lower than a real "
+                    "room); (2) uniformity must be at least "
                     "0.7, higher is better; (3) light spacing should stay "
                     "below `room.max_good_spacing_mm` and be similar in X and "
                     "Y, so the lights look evenly spread with no big dark "

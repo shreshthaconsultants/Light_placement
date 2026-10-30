@@ -25,6 +25,8 @@ import logging
 import math
 
 from config import (
+    MIN_MAIN_ROOM_LIGHTS, MIN_MAIN_ROOM_LIGHTS_AREA_M2,
+    GRID_LUX_TOLERANCE,
     DEFAULT_FIXTURE_LUMENS,
     ROOM_DEFAULTS,
     SERVER_HOST, SERVER_PORT,
@@ -51,6 +53,7 @@ from placement import (
     polygon_area_abs,
     is_convex,
     _all_factor_pairs,
+    edge_margins,
 )
 import jev_client
 import fan_placement
@@ -286,13 +289,17 @@ def _build_grid_candidates(req: "DesignRequest", rd: dict,
         for cols, rows in _all_factor_pairs(total):
             if (cols == 1 or rows == 1) and not (allow_lines or total == 2):
                 continue
-            sx, sy = W_mm / cols, H_mm / rows        # cell size = light spacing
-            gap_x, gap_y = sx / 2, sy / 2            # wall gap = half spacing
+            mx, my = edge_margins(W_mm, H_mm, cols, rows)    # fixed gap to the walls
+            sx = (W_mm - 2 * mx) / (cols - 1) if cols > 1 else W_mm
+            sy = (H_mm - 2 * my) / (rows - 1) if rows > 1 else H_mm
+            gap_x = mx if cols > 1 else W_mm / 2
+            gap_y = my if rows > 1 else H_mm / 2
             if (cols > 1 and sx < MIN_SANE_SPACING) or (rows > 1 and sy < MIN_SANE_SPACING):
                 continue
             if min(gap_x, gap_y) < MIN_WALL_CLEARANCE_MM:
                 continue
-            lights = [LayoutPoint(x=x_min + (i + 0.5) * sx, y=y_min + (j + 0.5) * sy)
+            lights = [LayoutPoint(x=x_min + (gap_x + i * sx if cols > 1 else W_mm / 2),
+                                  y=y_min + (gap_y + j * sy if rows > 1 else H_mm / 2))
                       for i in range(cols) for j in range(rows)]
             photo = validate_placement(
                 polyline_mm=req.polyline, lights_mm=lights,
@@ -305,7 +312,8 @@ def _build_grid_candidates(req: "DesignRequest", rd: dict,
             layout_aspect = max(cols, rows) / min(cols, rows)
             spacing_gap = abs(sx - sy) if (cols > 1 and rows > 1) else 0.0
             # Rule score: meet target, then uniform, then fewest lights, then shape.
-            score = (0 if photo.meets_target else 1,
+            meets = photo.avg_lux >= rd["lux"] * GRID_LUX_TOLERANCE
+            score = (0 if meets else 1,
                      0 if not photo.uniformity_warning else 1,
                      total, orient_pen, abs(layout_aspect - room_aspect), spacing_gap)
             out.append({
@@ -315,7 +323,7 @@ def _build_grid_candidates(req: "DesignRequest", rd: dict,
                 "wall_gap_x_mm": round(gap_x, 1), "wall_gap_y_mm": round(gap_y, 1),
                 "avg_lux": photo.avg_lux, "min_lux": photo.min_lux,
                 "uniformity": photo.uniformity_ratio,
-                "meets_target_lux": photo.meets_target,
+                "meets_target_lux": meets,
                 "uniformity_ok": not photo.uniformity_warning,
                 "_score": score,
             })
@@ -611,6 +619,8 @@ def design(req: DesignRequest):
     # ----- 1c. Even-count rule -----
     # Lights always come in pairs (2, 4, 6, ...) so the grid is symmetric.
     even_target = _round_up_to_even(layout_target) if even_rule else layout_target
+    if even_rule and W_mm * H_mm * 1e-6 >= MIN_MAIN_ROOM_LIGHTS_AREA_M2:
+        even_target = max(even_target, MIN_MAIN_ROOM_LIGHTS)
     layout_target = even_target
 
     # ----- 1d. Grid decision (rules build candidates, Jev picks) -----

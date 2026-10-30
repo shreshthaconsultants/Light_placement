@@ -397,20 +397,28 @@ def _exact_factor_grid(W: float, H: float, cfg: "LayoutRequest",
     return best
 
 
+def edge_margins(W: float, H: float, Nx: int, Ny: int) -> Tuple[float, float]:
+    """Gap between the outer lights and the walls on each axis: a fixed
+    LIGHT_EDGE_MARGIN_* (larger along the room's longer side), never more than the
+    cell-centred gap, so a dense grid still spreads out evenly."""
+    from config import LIGHT_EDGE_MARGIN_SHORT_MM, LIGHT_EDGE_MARGIN_LONG_MM
+    mx, my = ((LIGHT_EDGE_MARGIN_LONG_MM, LIGHT_EDGE_MARGIN_SHORT_MM) if W >= H
+              else (LIGHT_EDGE_MARGIN_SHORT_MM, LIGHT_EDGE_MARGIN_LONG_MM))
+    return min(mx, W / (2 * Nx)), min(my, H / (2 * Ny))
+
+
 def _forced_grid(W: float, H: float, cfg: "LayoutRequest",
                  Nx: int, Ny: int) -> Optional[dict]:
-    """Cell-centred plan for an exact (Nx, Ny) grid.
-
-    The room is split into Nx x Ny equal cells and one light sits at the
-    centre of each, so the gap to the wall is HALF the light spacing on each
-    axis (the standard even-lighting layout) instead of a fixed offset.
+    """Plan for an exact (Nx, Ny) grid with a FIXED gap to the walls
+    (see edge_margins) and the lights spread evenly in between.
     Returns None if the room has no width/height."""
     if W <= 0 or H <= 0:
         return None
-    Sx = W / Nx if Nx > 1 else 0.0
-    Sy = H / Ny if Ny > 1 else 0.0
-    Ox = W / (2 * Nx) if Nx > 1 else W / 2
-    Oy = H / (2 * Ny) if Ny > 1 else H / 2
+    mx, my = edge_margins(W, H, Nx, Ny)
+    Sx = (W - 2 * mx) / (Nx - 1) if Nx > 1 else 0.0
+    Sy = (H - 2 * my) / (Ny - 1) if Ny > 1 else 0.0
+    Ox = mx if Nx > 1 else W / 2
+    Oy = my if Ny > 1 else H / 2
     return {"Nx": Nx, "Ny": Ny, "offset_mm": Ox,
             "offset_x_mm": Ox, "offset_y_mm": Oy,
             "spacing_x_mm": Sx, "spacing_y_mm": Sy}

@@ -348,3 +348,22 @@ PART_MIN_UNIFORMITY = 0.5
 # A small extra part passes the lux check at this share of the required lux: its lumen-method
 # count (usually 1 light) is the starting point, and the simulation only vetoes a big shortfall.
 PART_LUX_TOLERANCE = 0.85
+
+# Light grid: fixed gap between the outer lights and the walls (standard site practice),
+# instead of "half the spacing". The larger gap is used along the room's LONGER side.
+# Spacing between lights is then the remaining span shared equally.
+LIGHT_EDGE_MARGIN_SHORT_MM = 450.0
+LIGHT_EDGE_MARGIN_LONG_MM = 600.0
+
+# Photometric check ignores a band this wide next to the walls (as lighting standards do
+# for the task area); the simulation counts only direct light, so wall points always read dark.
+PHOTOMETRIC_BORDER_MM = 500.0
+
+# A main-room grid counts as meeting the lux target at this share of it: the simulation
+# counts direct light only (no wall / ceiling reflections), so it reads low versus real rooms.
+GRID_LUX_TOLERANCE = 0.75
+
+# Site practice: a main room from this size up gets at least a 2x2 pattern (4 lights),
+# not a pair, even when the lumen method would allow fewer.
+MIN_MAIN_ROOM_LIGHTS = 4
+MIN_MAIN_ROOM_LIGHTS_AREA_M2 = 7.0

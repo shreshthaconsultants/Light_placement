@@ -23,8 +23,9 @@ from config import (
     LAMBERTIAN_INTENSITY_DIVISOR,
     UNIFORMITY_WARNING_THRESHOLD,
     DEFAULT_VALIDATION_SPACING_MM,
+    PHOTOMETRIC_BORDER_MM,
 )
-from placement import LayoutPoint, point_in_polygon
+from placement import LayoutPoint, point_in_polygon, min_distance_to_polygon
 
 
 # =====================================================================
@@ -153,6 +154,12 @@ def validate_placement(polyline_mm: List[LayoutPoint],
 
     pts = [(p.x, p.y) for p in polyline_mm]
     samples_mm = _generate_sample_points(pts, sample_spacing_mm)
+    # Judge the task area: skip the band next to the walls (direct light only, so
+    # wall-side points always read dark). Small rooms keep every sample.
+    inner = [q for q in samples_mm
+             if min_distance_to_polygon(q[0], q[1], pts) >= PHOTOMETRIC_BORDER_MM]
+    if len(inner) >= 4:
+        samples_mm = inner
 
     # Empty room / degenerate sampling: return zeros with a clear false flag.
     if not samples_mm or not lights_mm:
