@@ -95,7 +95,9 @@ def build_request(room: Dict[str, Any],
                     "gaps or lights crowded against walls; (4) among options "
                     "that satisfy 1-3 choose the one with the fewest lights, "
                     "preferring a grid whose longer side follows the room's "
-                    "longer side."
+                    "longer side. If NO option reaches uniformity 0.7, do not "
+                    "reject them all: take the options whose target is met, "
+                    "and choose the one with the fewest lights."
                 ),
                 "criteria": criteria,
             }
