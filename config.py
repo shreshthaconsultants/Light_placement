@@ -367,3 +367,28 @@ GRID_LUX_TOLERANCE = 0.75
 # not a pair, even when the lumen method would allow fewer.
 MIN_MAIN_ROOM_LIGHTS = 4
 MIN_MAIN_ROOM_LIGHTS_AREA_M2 = 7.0
+
+# Living rooms: small ones keep the standard 450 / 600 mm wall gap; medium and large ones
+# use 600 / 750 mm (2 - 2.5 ft). Lights must be at least 5 ft apart, ideally 6 - 7 ft.
+LIVING_ROOM_TYPES = {"living_room"}
+LIVING_SMALL_MAX_AREA_M2 = 15.0
+LIVING_LARGE_EDGE_MARGIN_SHORT_MM = 600.0
+LIVING_LARGE_EDGE_MARGIN_LONG_MM = 750.0
+MIN_LIGHT_SPACING_MM = 1524.0           # 5 ft
+PREFERRED_MIN_LIGHT_SPACING_MM = 1830.0  # 6 ft
+
+# Living-room light count follows room size: small and medium rooms get 4 lights, rooms bigger
+# than usual get 6 (Jev decides between the options; the rules use the same practice).
+LIVING_LARGE_MIN_AREA_M2 = 25.0
+LIVING_USUAL_LIGHTS_SMALL_MEDIUM = 4
+LIVING_USUAL_LIGHTS_LARGE = 6
+GRID_LUX_TOLERANCE_LIVING = 0.55   # the usual count is not overridden by a modest lux shortfall
+
+# Gap between the outer lights and the walls (both sides equal): 2 ft in ordinary rooms, growing
+# with floor area up to 2.5 ft in big rooms. Auditoriums always use the 2.5 ft maximum.
+# (Small living rooms keep their own 450 / 600 mm rule.)
+WALL_GAP_BASE_MM = 610.0            # 2 ft
+WALL_GAP_MAX_MM = 762.0             # 2.5 ft
+WALL_GAP_RAMP_FROM_M2 = 25.0
+WALL_GAP_RAMP_TO_M2 = 60.0
+WALL_GAP_MAX_ROOM_TYPES = {"auditorium"}

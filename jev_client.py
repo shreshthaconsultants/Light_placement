@@ -73,6 +73,12 @@ def build_request(room: Dict[str, Any],
                   f"(target met within 15%: {'yes' if c.get('meets_target_lux') else 'no'}), "
                   f"uniformity {c.get('uniformity', 0):.2f} "
                   f"({'good' if c.get('uniformity_ok') else 'poor, below 0.7'})")
+        if "closest_lights_mm" in c:
+            s += (f"; closest two lights {c['closest_lights_mm']} mm apart "
+                  f"(minimum spacing rule met: {'yes' if c.get('spacing_rule_ok') else 'no'})")
+        if "is_usual_count" in c:
+            s += (f"; usual light count for this room size: "
+                  f"{'yes' if c['is_usual_count'] else 'no'}")
         return s
 
     criteria = {c["id"]: _describe(c) for c in candidates}
@@ -85,9 +91,10 @@ def build_request(room: Dict[str, Any],
                 "instructions": (
                     "Which candidate grid in `candidate_grids` is the best "
                     "ceiling-light layout for `room`? Each candidate keeps a "
-                    "fixed gap to the walls (450 mm on the room's shorter "
-                    "side, 600 mm on the longer side, as in standard site "
-                    "practice) and spreads the lights evenly in between. "
+                    "fixed gap to every wall (2 ft, up to 2.5 ft in big "
+                    "rooms and auditoriums; small living rooms use 450 / "
+                    "600 mm, as in standard site practice) and spreads the "
+                    "lights evenly in between. "
                     "Decide in this order: (1) the simulated average lux "
                     "must reach at least 85% of `room.required_lux` (the "
                     "simulation counts direct light only and ignores wall and "
@@ -101,7 +108,17 @@ def build_request(room: Dict[str, Any],
                     "preferring a grid whose longer side follows the room's "
                     "longer side. If NO option reaches uniformity 0.7, do not "
                     "reject them all: take the options whose target is met, "
-                    "and choose the one with the fewest lights."
+                    "and choose the one with the fewest lights. If `room` has "
+                    "`min_light_spacing_mm`, first discard options whose "
+                    "`spacing_rule_ok` is false (lights too close together), "
+                    "and prefer options whose closest lights are at least "
+                    "`room.preferred_min_light_spacing_mm` apart. If `room` has "
+                    "`usual_light_count_for_this_size`, follow site practice: "
+                    "small and medium rooms get 4 lights and rooms bigger than "
+                    "usual get 6, so choose the option whose `is_usual_count` "
+                    "is true unless the simulated lux is far below the target "
+                    "or the room sits right at the edge of its size class, in "
+                    "which case you may choose the next count up."
                 ),
                 "criteria": criteria,
             }

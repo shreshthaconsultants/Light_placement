@@ -25,6 +25,12 @@ import logging
 import math
 
 from config import (
+    WALL_GAP_BASE_MM, WALL_GAP_MAX_MM, WALL_GAP_RAMP_FROM_M2, WALL_GAP_RAMP_TO_M2,
+    WALL_GAP_MAX_ROOM_TYPES,
+    LIVING_LARGE_MIN_AREA_M2, LIVING_USUAL_LIGHTS_SMALL_MEDIUM, LIVING_USUAL_LIGHTS_LARGE,
+    GRID_LUX_TOLERANCE_LIVING,
+    LIVING_ROOM_TYPES, LIVING_SMALL_MAX_AREA_M2, LIVING_LARGE_EDGE_MARGIN_SHORT_MM,
+    LIVING_LARGE_EDGE_MARGIN_LONG_MM, MIN_LIGHT_SPACING_MM, PREFERRED_MIN_LIGHT_SPACING_MM,
     MIN_MAIN_ROOM_LIGHTS, MIN_MAIN_ROOM_LIGHTS_AREA_M2,
     GRID_LUX_TOLERANCE,
     DEFAULT_FIXTURE_LUMENS,
@@ -262,10 +268,45 @@ def _round_up_to_even(n: int) -> int:
     return n if n % 2 == 0 else n + 1
 
 
+def _living_rules(rt: str, W_mm: float, H_mm: float) -> Dict[str, Any]:
+    """Wall-gap and light-spacing rules that differ from the default (living rooms only).
+    Small living rooms keep the standard gap; medium / large ones use a bigger gap, and
+    all must keep lights at least MIN_LIGHT_SPACING_MM apart."""
+    if rt not in LIVING_ROOM_TYPES:
+        return {}
+    area = W_mm * H_mm * 1e-6
+    size = ("large" if area >= LIVING_LARGE_MIN_AREA_M2
+            else "medium" if area >= LIVING_SMALL_MAX_AREA_M2 else "small")
+    out: Dict[str, Any] = {
+        "min_spacing": MIN_LIGHT_SPACING_MM, "size_class": size,
+        "usual_count": (LIVING_USUAL_LIGHTS_LARGE if size == "large"
+                        else LIVING_USUAL_LIGHTS_SMALL_MEDIUM),
+    }
+    if area >= LIVING_SMALL_MAX_AREA_M2:
+        out["margin_short"] = LIVING_LARGE_EDGE_MARGIN_SHORT_MM
+        out["margin_long"] = LIVING_LARGE_EDGE_MARGIN_LONG_MM
+    return out
+
+
+def _wall_gap_mm(rt: str, area_m2: float) -> float:
+    """Gap from the outer lights to every wall: 2 ft, rising to 2.5 ft with room area;
+    auditoriums always get 2.5 ft."""
+    if rt in WALL_GAP_MAX_ROOM_TYPES:
+        return WALL_GAP_MAX_MM
+    t = (area_m2 - WALL_GAP_RAMP_FROM_M2) / (WALL_GAP_RAMP_TO_M2 - WALL_GAP_RAMP_FROM_M2)
+    t = max(0.0, min(1.0, t))
+    return round(WALL_GAP_BASE_MM + t * (WALL_GAP_MAX_MM - WALL_GAP_BASE_MM))
+
+
 def _build_grid_candidates(req: "DesignRequest", rd: dict,
                            x_min: float, y_min: float,
                            W_mm: float, H_mm: float, even_target: int,
-                           allow_lines: bool) -> List[Dict[str, Any]]:
+                           allow_lines: bool,
+                           margin_short: Optional[float] = None,
+                           margin_long: Optional[float] = None,
+                           min_spacing: Optional[float] = None,
+                           usual_count: Optional[int] = None,
+                           size_class: Optional[str] = None) -> List[Dict[str, Any]]:
     """All (cols, rows) grids whose total is an EVEN number in
     [even_target, even_target + 2*GRID_CANDIDATE_EXTRA_STEPS] and that fit
     the room.
@@ -289,7 +330,8 @@ def _build_grid_candidates(req: "DesignRequest", rd: dict,
         for cols, rows in _all_factor_pairs(total):
             if (cols == 1 or rows == 1) and not (allow_lines or total == 2):
                 continue
-            mx, my = edge_margins(W_mm, H_mm, cols, rows)    # fixed gap to the walls
+            mx, my = edge_margins(W_mm, H_mm, cols, rows,
+                                  margin_short, margin_long)    # fixed gap to the walls
             sx = (W_mm - 2 * mx) / (cols - 1) if cols > 1 else W_mm
             sy = (H_mm - 2 * my) / (rows - 1) if rows > 1 else H_mm
             gap_x = mx if cols > 1 else W_mm / 2
@@ -301,6 +343,9 @@ def _build_grid_candidates(req: "DesignRequest", rd: dict,
             lights = [LayoutPoint(x=x_min + (gap_x + i * sx if cols > 1 else W_mm / 2),
                                   y=y_min + (gap_y + j * sy if rows > 1 else H_mm / 2))
                       for i in range(cols) for j in range(rows)]
+            gaps = ([sx] if cols > 1 else []) + ([sy] if rows > 1 else [])
+            min_gap = min(gaps) if gaps else max(W_mm, H_mm)
+            too_close = bool(min_spacing and min_gap < min_spacing)
             photo = validate_placement(
                 polyline_mm=req.polyline, lights_mm=lights,
                 fixture_lumens=req.fixture_lumens, required_lux=rd["lux"],
@@ -312,9 +357,14 @@ def _build_grid_candidates(req: "DesignRequest", rd: dict,
             layout_aspect = max(cols, rows) / min(cols, rows)
             spacing_gap = abs(sx - sy) if (cols > 1 and rows > 1) else 0.0
             # Rule score: meet target, then uniform, then fewest lights, then shape.
-            meets = photo.avg_lux >= rd["lux"] * GRID_LUX_TOLERANCE
-            score = (0 if meets else 1,
+            meets = photo.avg_lux >= rd["lux"] * (GRID_LUX_TOLERANCE_LIVING if size_class in ("small", "medium")
+                                                   else GRID_LUX_TOLERANCE)
+            pref_ok = min_gap >= PREFERRED_MIN_LIGHT_SPACING_MM
+            score = (1 if too_close else 0,
+                     0 if meets else 1,
+                     0 if (not usual_count or total == usual_count) else 1,
                      0 if not photo.uniformity_warning else 1,
+                     0 if (pref_ok or not min_spacing) else 1,
                      total, orient_pen, abs(layout_aspect - room_aspect), spacing_gap)
             out.append({
                 "id": f"{cols}x{rows}", "cols": cols, "rows": rows,
@@ -325,6 +375,9 @@ def _build_grid_candidates(req: "DesignRequest", rd: dict,
                 "uniformity": photo.uniformity_ratio,
                 "meets_target_lux": meets,
                 "uniformity_ok": not photo.uniformity_warning,
+                "closest_lights_mm": round(min_gap),
+                "spacing_rule_ok": not too_close,
+                **({"is_usual_count": total == usual_count} if usual_count else {}),
                 "_score": score,
             })
     out.sort(key=lambda c: c["_score"])
@@ -625,6 +678,14 @@ def design(req: DesignRequest):
 
     # ----- 1d. Grid decision (rules build candidates, Jev picks) -----
     forced_grid = None
+    living = _living_rules(rt, W_mm, H_mm)
+    grid_rules = dict(living)
+    if not (living and living["size_class"] == "small"):
+        gap = _wall_gap_mm(rt, W_mm * H_mm * 1e-6)
+        grid_rules["margin_short"] = grid_rules["margin_long"] = gap
+    if living:
+        even_target = max(even_target, LIVING_USUAL_LIGHTS_SMALL_MEDIUM)
+        layout_target = even_target
     selector: Dict[str, Any] = {"decided_by": "rules", "candidates": 0}
     convex = is_convex([(p.x, p.y) for p in light_req.polyline])
     if even_rule and convex:
@@ -634,6 +695,7 @@ def design(req: DesignRequest):
             W_mm, H_mm, even_target,
             allow_lines=(short_side / long_side < SQUARE_ROOM_ASPECT_THRESHOLD)
             if long_side > 0 else False,
+            **grid_rules,
         )
         selector["candidates"] = len(cands)
         if cands:
@@ -655,6 +717,12 @@ def design(req: DesignRequest):
                                      "area_m2": round((r[2] - r[0]) * (r[3] - r[1]) * 1e-6, 2)}
                                     for r in rest_rects],
                     "whole_room_area_m2": round(area_m2, 2),
+                    **({"min_light_spacing_mm": round(MIN_LIGHT_SPACING_MM),
+                        "preferred_min_light_spacing_mm": round(PREFERRED_MIN_LIGHT_SPACING_MM)}
+                       if living else {}),
+                    **({"room_size_class": living["size_class"],
+                        "usual_light_count_for_this_size": living["usual_count"]}
+                       if living else {}),
                     # Above ~1.5 x (mounting - working plane) lights get patchy.
                     "max_good_spacing_mm": round(1500 * (req.mounting_height_m
                                                          - req.working_plane_m)),
@@ -676,6 +744,8 @@ def design(req: DesignRequest):
 
     # ----- 2. Grid placement (with target_count) -----
     layout_req = _design_request_to_layout_request(light_req, layout_target)
+    layout_req.edge_margin_short_mm = grid_rules.get("margin_short")
+    layout_req.edge_margin_long_mm = grid_rules.get("margin_long")
     if forced_grid:
         layout_req.forced_grid = forced_grid
     layout_resp: LayoutResponse = compute_layout(layout_req)

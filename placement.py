@@ -102,6 +102,10 @@ class LayoutRequest(BaseModel):
         default=None,
         description="Force an exact (cols, rows) grid, e.g. (3, 2)."
     )
+    # Gap between outer lights and walls for a forced grid (mm); the long value
+    # applies along the room's longer side. None = config defaults.
+    edge_margin_short_mm: Optional[float] = Field(default=None)
+    edge_margin_long_mm: Optional[float] = Field(default=None)
 
 
 class GridMeta(BaseModel):
@@ -397,13 +401,16 @@ def _exact_factor_grid(W: float, H: float, cfg: "LayoutRequest",
     return best
 
 
-def edge_margins(W: float, H: float, Nx: int, Ny: int) -> Tuple[float, float]:
+def edge_margins(W: float, H: float, Nx: int, Ny: int,
+                 short_mm: Optional[float] = None,
+                 long_mm: Optional[float] = None) -> Tuple[float, float]:
     """Gap between the outer lights and the walls on each axis: a fixed
     LIGHT_EDGE_MARGIN_* (larger along the room's longer side), never more than the
     cell-centred gap, so a dense grid still spreads out evenly."""
     from config import LIGHT_EDGE_MARGIN_SHORT_MM, LIGHT_EDGE_MARGIN_LONG_MM
-    mx, my = ((LIGHT_EDGE_MARGIN_LONG_MM, LIGHT_EDGE_MARGIN_SHORT_MM) if W >= H
-              else (LIGHT_EDGE_MARGIN_SHORT_MM, LIGHT_EDGE_MARGIN_LONG_MM))
+    short = LIGHT_EDGE_MARGIN_SHORT_MM if short_mm is None else short_mm
+    long_ = LIGHT_EDGE_MARGIN_LONG_MM if long_mm is None else long_mm
+    mx, my = (long_, short) if W >= H else (short, long_)
     return min(mx, W / (2 * Nx)), min(my, H / (2 * Ny))
 
 
@@ -414,7 +421,9 @@ def _forced_grid(W: float, H: float, cfg: "LayoutRequest",
     Returns None if the room has no width/height."""
     if W <= 0 or H <= 0:
         return None
-    mx, my = edge_margins(W, H, Nx, Ny)
+    mx, my = edge_margins(W, H, Nx, Ny,
+                          getattr(cfg, "edge_margin_short_mm", None),
+                          getattr(cfg, "edge_margin_long_mm", None))
     Sx = (W - 2 * mx) / (Nx - 1) if Nx > 1 else 0.0
     Sy = (H - 2 * my) / (Ny - 1) if Ny > 1 else 0.0
     Ox = mx if Nx > 1 else W / 2
